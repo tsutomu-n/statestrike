@@ -8,7 +8,11 @@ import duckdb
 import numpy as np
 
 from statestrike.collector import CollectorConfig, collect_market_batch
-from statestrike.exports import export_hftbacktest_npz, export_nautilus_catalog
+from statestrike.exports import (
+    export_hftbacktest_npz,
+    export_nautilus_catalog,
+    validate_export_bundle,
+)
 from statestrike.schemas import validate_records
 from statestrike.storage import NormalizedWriter
 
@@ -27,6 +31,8 @@ def _write_valid_normalized_rows(tmp_path: Path) -> tuple[Path, date]:
         market_data_network="mainnet",
         flush_interval_ms=1000,
         snapshot_recovery_enabled=True,
+        channels=("l2Book", "trades", "activeAssetCtx"),
+        candle_interval=None,
     )
     batch = collect_market_batch(
         messages=[
@@ -87,3 +93,35 @@ def test_export_hftbacktest_npz_writes_six_column_array(tmp_path) -> None:
 
     assert data.shape[1] == 6
     assert set(data[:, 0].astype(int)) == {2, 4}
+
+
+def test_validate_export_bundle_reports_integrity_stats(tmp_path) -> None:
+    root, trading_date = _write_valid_normalized_rows(tmp_path)
+    export_nautilus_catalog(
+        normalized_root=root,
+        export_root=root,
+        trading_date=trading_date,
+        symbol="BTC",
+    )
+    export_hftbacktest_npz(
+        normalized_root=root,
+        export_root=root,
+        trading_date=trading_date,
+        symbol="BTC",
+    )
+
+    report = validate_export_bundle(
+        export_root=root,
+        trading_date=trading_date,
+        symbol="BTC",
+    )
+
+    assert report.nautilus_tables["trade_ticks"].row_count == 2
+    assert report.nautilus_tables["trade_ticks"].symbol_count == 1
+    assert report.nautilus_tables["trade_ticks"].null_count == 0
+    assert report.nautilus_tables["trade_ticks"].exchange_ts_monotonic is True
+    assert report.hftbacktest.row_count == 6
+    assert report.hftbacktest.null_count == 0
+    assert report.hftbacktest.exchange_ts_monotonic is True
+    assert report.hftbacktest.local_ts_monotonic is True
+    assert report.hftbacktest.event_codes == (2, 4)

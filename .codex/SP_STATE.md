@@ -1,13 +1,13 @@
 # SUPERPOWERS STATE
-**Goal:** Implement the approved Phase 1 StateStrike data-platform plan from `.plan/00next.md` on top of the existing bootstrap by adding fixture-driven market-data collection, raw/normalized/quarantine storage, Pandera schema gating, DuckDB quality audit, a Nautilus compare-ready export bundle, and an hftbacktest `.npz` export, while explicitly excluding live order-path and real network collection.
-**TestCommand:** `CI=true timeout 180 uv run --group dev --extra phase1-data --extra execution pytest -q`
-**AllowedFiles:** `pyproject.toml`, `uv.lock`, `.codex/SP_STATE.md`, `src/statestrike/settings.py`, `src/statestrike/models.py`, `src/statestrike/policies.py`, `src/statestrike/paths.py`, `src/statestrike/collector.py`, `src/statestrike/storage.py`, `src/statestrike/normalize.py`, `src/statestrike/schemas.py`, `src/statestrike/quality.py`, `src/statestrike/exports.py`, `tests/test_settings.py`, `tests/test_paths.py`, `tests/test_collector.py`, `tests/test_storage.py`, `tests/test_normalize.py`, `tests/test_schemas.py`, `tests/test_quality.py`, `tests/test_exports.py`, `tests/fixtures/hyperliquid/l2_book.json`, `tests/fixtures/hyperliquid/trades.json`, `tests/fixtures/hyperliquid/active_asset_ctx.json`
+**Goal:** Implement the approved Phase 1.5 follow-up from `.plan/01next.md` by adding code support for mainnet public-data smoke runs over the existing Phase 1 pipeline, strengthening quality audit/export validation, and keeping live execution paths untouched.
+**TestCommand:** `CI=true timeout 180 uv run --group dev --extra phase1-data --extra execution pytest tests/test_settings.py tests/test_collector.py tests/test_storage.py tests/test_quality.py tests/test_exports.py tests/test_smoke.py -q`
+**AllowedFiles:** `.codex/SP_STATE.md`, `src/statestrike/settings.py`, `src/statestrike/collector.py`, `src/statestrike/storage.py`, `src/statestrike/quality.py`, `src/statestrike/exports.py`, `src/statestrike/smoke.py`, `tests/test_settings.py`, `tests/test_collector.py`, `tests/test_storage.py`, `tests/test_quality.py`, `tests/test_exports.py`, `tests/test_smoke.py`, `tests/fixtures/hyperliquid/candle.json`
 
 ## TASKS
-- [x] TASK 1: [RED] Write failing tests for phase-1 collector/storage settings, raw/quarantine path builders, and compressed raw manifest writing.
-- [x] TASK 2: [GREEN] Implement settings/path/storage support so TASK 1 passes without widening scope.
-- [x] TASK 3: [RED] Write failing tests for Hyperliquid fixture normalization and Pandera schema-gate quarantine splitting.
-- [x] TASK 4: [GREEN] Implement `collector.py`, `normalize.py`, and `schemas.py` so TASK 3 passes using fixture replay only.
-- [x] TASK 5: [RED] Write failing tests for DuckDB quality audit, Nautilus compare-ready export bundle, and hftbacktest `.npz` export.
-- [x] TASK 6: [GREEN] Implement `quality.py`, `exports.py`, and any required model/policy extensions so TASK 5 passes.
-- [x] TASK 7: [REFACTOR] Run the full test command, keep the implementation aligned with `.plan/00next.md`, and remove duplication or accidental scope growth.
+- [x] TASK 1: [RED] Write failing tests for Phase 1.5 smoke configuration defaults, symbol allowlist guardrails, and collector handling for supplemental `candle` traffic without widening canonical normalized tables.
+- [x] TASK 2: [GREEN] Implement the settings and collector changes needed for TASK 1 while keeping live-order scope disabled and Phase 1 canonical tables unchanged.
+- [x] TASK 3: [RED] Write failing tests for richer quality/export validation outputs, including thresholdable skew stats, quarantine-rate inputs, and export bundle integrity summaries.
+- [x] TASK 4: [GREEN] Implement the audit/export report changes needed for TASK 3 without adding new dependencies or execution-path code.
+- [x] TASK 5: [RED] Write a failing integration test for a one-shot smoke pipeline runner that ingests captured public messages, writes raw/normalized/quarantine outputs, emits a manifest, and produces audit/export validation artifacts.
+- [x] TASK 6: [GREEN] Implement `src/statestrike/smoke.py` and the minimal supporting storage/report wiring so TASK 5 passes for fixture-driven smoke batches and is ready to back a real mainnet run.
+- [x] TASK 7: [REFACTOR] Run the target command, then `CI=true timeout 180 uv run --group dev --extra phase1-data --extra execution pytest -q`, and confirm the Phase 1.5 additions did not reopen any live execution path.

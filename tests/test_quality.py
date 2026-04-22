@@ -4,6 +4,8 @@ import json
 from datetime import date
 from pathlib import Path
 
+import pytest
+
 from statestrike.collector import CollectorConfig, collect_market_batch
 from statestrike.quality import run_quality_audit
 from statestrike.schemas import validate_records
@@ -24,6 +26,8 @@ def test_quality_audit_summarizes_normalized_tables(tmp_path) -> None:
         market_data_network="mainnet",
         flush_interval_ms=1000,
         snapshot_recovery_enabled=True,
+        channels=("l2Book", "trades", "activeAssetCtx"),
+        candle_interval=None,
     )
     batch = collect_market_batch(
         messages=[
@@ -42,7 +46,16 @@ def test_quality_audit_summarizes_normalized_tables(tmp_path) -> None:
     trading_date = date(2026, 4, 22)
 
     for table, rows in batch.normalized_rows.items():
-        result = validate_records(table, rows)
+        candidate_rows = rows
+        if table == "trades":
+            candidate_rows = [
+                *rows,
+                {
+                    **rows[0],
+                    "size": 0.0,
+                },
+            ]
+        result = validate_records(table, candidate_rows)
         if result.valid_rows:
             normalized.write_rows(
                 table=table,
@@ -60,8 +73,11 @@ def test_quality_audit_summarizes_normalized_tables(tmp_path) -> None:
 
     report = run_quality_audit(
         normalized_root=tmp_path,
+        quarantine_root=tmp_path,
         trading_date=trading_date,
         symbols=("BTC",),
+        skew_warning_ms=45,
+        skew_severe_ms=90,
     )
 
     assert report.row_counts["book_events"] == 1
@@ -69,3 +85,6 @@ def test_quality_audit_summarizes_normalized_tables(tmp_path) -> None:
     assert report.row_counts["trades"] == 2
     assert report.row_counts["asset_ctx"] == 1
     assert report.crossed_book_count == 0
+    assert report.skew_alerts["trades"] == "warning"
+    assert report.quarantine_row_counts["trades"] == 1
+    assert report.quarantine_rates["trades"] == pytest.approx(1 / 3)

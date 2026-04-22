@@ -66,3 +66,44 @@ def test_settings_expose_phase_one_storage_and_collector_defaults() -> None:
     assert settings.exports_root == Path("data/exports")
     assert settings.flush_interval_ms == 1000
     assert settings.snapshot_recovery_enabled is True
+
+
+def test_settings_expose_phase15_smoke_defaults(tmp_path: Path) -> None:
+    env_file = tmp_path / "phase15.env"
+    env_file.write_text(
+        "STATESTRIKE_ALLOWED_SYMBOLS=BTC,ETH,SOL",
+        encoding="utf-8",
+    )
+
+    settings = Settings(_env_file=env_file)
+    smoke_config = settings.build_smoke_collector_config()
+
+    assert settings.smoke_channels == (
+        "l2Book",
+        "trades",
+        "activeAssetCtx",
+        "candle",
+    )
+    assert settings.smoke_candle_interval == "1m"
+    assert smoke_config.allowed_symbols == ("BTC", "ETH", "SOL")
+    assert smoke_config.channels == settings.smoke_channels
+    assert smoke_config.candle_interval == "1m"
+
+
+def test_settings_reject_phase15_smoke_without_explicit_small_allowlist(
+    tmp_path: Path,
+) -> None:
+    empty_env = tmp_path / "phase15-empty.env"
+    empty_env.write_text("", encoding="utf-8")
+
+    with pytest.raises(ValueError, match="Phase 1.5 smoke runs require explicit allowed_symbols"):
+        Settings(_env_file=empty_env).build_smoke_collector_config()
+
+    crowded_env = tmp_path / "phase15-crowded.env"
+    crowded_env.write_text(
+        "STATESTRIKE_ALLOWED_SYMBOLS=BTC,ETH,SOL,XRP,AVAX,ARB,APT,LINK,DOGE,SUI,ATOM",
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="Phase 1.5 smoke runs support at most 10 symbols"):
+        Settings(_env_file=crowded_env).build_smoke_collector_config()

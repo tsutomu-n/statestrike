@@ -6,9 +6,36 @@ from pathlib import Path
 import duckdb
 import numpy as np
 import pandas as pd
+from pydantic import BaseModel, ConfigDict, Field
 
 from statestrike.paths import build_export_path, build_normalized_path
 from statestrike.storage import _parquet_source, _write_parquet_frame
+
+
+class ExportTableValidation(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    row_count: int = Field(ge=0)
+    symbol_count: int = Field(ge=0)
+    null_count: int = Field(ge=0)
+    exchange_ts_monotonic: bool
+
+
+class HftbacktestValidation(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    row_count: int = Field(ge=0)
+    null_count: int = Field(ge=0)
+    exchange_ts_monotonic: bool
+    local_ts_monotonic: bool
+    event_codes: tuple[int, ...]
+
+
+class ExportValidationReport(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    nautilus_tables: dict[str, ExportTableValidation]
+    hftbacktest: HftbacktestValidation
 
 
 def export_nautilus_catalog(
@@ -148,7 +175,7 @@ def export_hftbacktest_npz(
     arrays = [array for array in (trade_rows, book_rows) if array.size]
     if arrays:
         data = np.vstack(arrays)
-        ordering = np.lexsort((data[:, 2], data[:, 1], data[:, 0]))
+        ordering = np.lexsort((data[:, 0], data[:, 2], data[:, 1]))
         data = data[ordering]
     else:
         data = np.empty((0, 6), dtype=np.float64)
@@ -156,6 +183,44 @@ def export_hftbacktest_npz(
     path = export_dir / f"{symbol.lower()}_market_data.npz"
     np.savez_compressed(path, data=data)
     return path
+
+
+def validate_export_bundle(
+    *,
+    export_root: Path,
+    trading_date: date,
+    symbol: str,
+) -> ExportValidationReport:
+    symbol = symbol.upper()
+    nautilus_dir = build_export_path(
+        root=export_root,
+        target="nautilus",
+        trading_date=trading_date,
+        symbol=symbol,
+    )
+    hft_dir = build_export_path(
+        root=export_root,
+        target="hftbacktest",
+        trading_date=trading_date,
+        symbol=symbol,
+    )
+
+    nautilus_tables = {
+        table_name: _summarize_export_frame(_read_export_frame(nautilus_dir / filename))
+        for table_name, filename in (
+            ("instrument", "instrument.parquet"),
+            ("trade_ticks", "trade_ticks.parquet"),
+            ("book_levels", "book_levels.parquet"),
+            ("asset_ctx", "asset_ctx.parquet"),
+        )
+    }
+    hftbacktest = _summarize_hftbacktest_npz(
+        hft_dir / f"{symbol.lower()}_market_data.npz"
+    )
+    return ExportValidationReport(
+        nautilus_tables=nautilus_tables,
+        hftbacktest=hftbacktest,
+    )
 
 
 def _join_book_levels(
@@ -228,6 +293,72 @@ def _to_hftbacktest_rows(
     )
 
 
+def _read_export_frame(path: Path) -> pd.DataFrame:
+    if not path.exists():
+        return pd.DataFrame()
+    connection = duckdb.connect()
+    try:
+        escaped_path = path.as_posix().replace("'", "''")
+        return connection.execute(
+            f"SELECT * FROM read_parquet('{escaped_path}')"
+        ).fetchdf()
+    finally:
+        connection.close()
+
+
+def _summarize_export_frame(frame: pd.DataFrame) -> ExportTableValidation:
+    symbol_count = 0
+    if "symbol" in frame:
+        symbol_count = int(frame["symbol"].nunique(dropna=True))
+    elif "instrument_id" in frame:
+        symbol_count = int(frame["instrument_id"].nunique(dropna=True))
+    exchange_ts_monotonic = True
+    if "exchange_ts" in frame:
+        exchange_ts_monotonic = _is_non_decreasing(
+            frame["exchange_ts"].to_numpy(dtype=np.int64)
+        )
+    return ExportTableValidation(
+        row_count=int(len(frame)),
+        symbol_count=symbol_count,
+        null_count=int(frame.isna().sum().sum()) if not frame.empty else 0,
+        exchange_ts_monotonic=exchange_ts_monotonic,
+    )
+
+
+def _summarize_hftbacktest_npz(path: Path) -> HftbacktestValidation:
+    if not path.exists():
+        return HftbacktestValidation(
+            row_count=0,
+            null_count=0,
+            exchange_ts_monotonic=True,
+            local_ts_monotonic=True,
+            event_codes=(),
+        )
+    with np.load(path) as archive:
+        data = archive["data"]
+    if data.size == 0:
+        return HftbacktestValidation(
+            row_count=0,
+            null_count=0,
+            exchange_ts_monotonic=True,
+            local_ts_monotonic=True,
+            event_codes=(),
+        )
+    return HftbacktestValidation(
+        row_count=int(data.shape[0]),
+        null_count=int(np.isnan(data).sum()),
+        exchange_ts_monotonic=_is_non_decreasing(data[:, 1]),
+        local_ts_monotonic=_is_non_decreasing(data[:, 2]),
+        event_codes=tuple(sorted({int(code) for code in data[:, 0]})),
+    )
+
+
+def _is_non_decreasing(values: np.ndarray) -> bool:
+    if values.size <= 1:
+        return True
+    return bool(np.all(np.diff(values) >= 0))
+
+
 def _read_normalized_table(
     *,
     normalized_root: Path,
@@ -251,5 +382,7 @@ def _read_normalized_table(
         return connection.execute(f"SELECT * FROM {source}").fetchdf()
     finally:
         connection.close()
+
+
 def _instrument_id(symbol: str) -> str:
     return f"{symbol.upper()}-USD-PERP.HYPERLIQUID"
