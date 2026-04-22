@@ -54,3 +54,15 @@ def test_settings_reject_phase_one_live_path_enablement(tmp_path: Path) -> None:
 
     with pytest.raises(ValueError, match="Phase 1 bootstrap excludes live order path"):
         Settings(_env_file=env_file)
+
+
+def test_settings_expose_phase_one_storage_and_collector_defaults() -> None:
+    settings = Settings()
+
+    assert settings.data_root == Path("data")
+    assert settings.raw_root == Path("data/raw_ws")
+    assert settings.normalized_root == Path("data/normalized")
+    assert settings.quarantine_root == Path("data/quarantine")
+    assert settings.exports_root == Path("data/exports")
+    assert settings.flush_interval_ms == 1000
+    assert settings.snapshot_recovery_enabled is True

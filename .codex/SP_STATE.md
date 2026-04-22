@@ -1,13 +1,13 @@
 # SUPERPOWERS STATE
-**Goal:** Bootstrap the Phase 1 StateStrike data-platform codebase from the approved docs by adding a pinned Python project, core settings/contracts, deterministic identifiers, normalized market-data models, channel-specific gap policies, and export path conventions with tests, while explicitly excluding live order-path and networked collector work.
-**TestCommand:** `CI=true timeout 120 uv run pytest -q`
-**AllowedFiles:** `pyproject.toml`, `uv.lock`, `src/statestrike/__init__.py`, `src/statestrike/settings.py`, `src/statestrike/identifiers.py`, `src/statestrike/models.py`, `src/statestrike/policies.py`, `src/statestrike/paths.py`, `tests/test_settings.py`, `tests/test_identifiers.py`, `tests/test_models.py`, `tests/test_paths.py`
+**Goal:** Implement the approved Phase 1 StateStrike data-platform plan from `.plan/00next.md` on top of the existing bootstrap by adding fixture-driven market-data collection, raw/normalized/quarantine storage, Pandera schema gating, DuckDB quality audit, a Nautilus compare-ready export bundle, and an hftbacktest `.npz` export, while explicitly excluding live order-path and real network collection.
+**TestCommand:** `CI=true timeout 180 uv run --group dev --extra phase1-data --extra execution pytest -q`
+**AllowedFiles:** `pyproject.toml`, `uv.lock`, `.codex/SP_STATE.md`, `src/statestrike/settings.py`, `src/statestrike/models.py`, `src/statestrike/policies.py`, `src/statestrike/paths.py`, `src/statestrike/collector.py`, `src/statestrike/storage.py`, `src/statestrike/normalize.py`, `src/statestrike/schemas.py`, `src/statestrike/quality.py`, `src/statestrike/exports.py`, `tests/test_settings.py`, `tests/test_paths.py`, `tests/test_collector.py`, `tests/test_storage.py`, `tests/test_normalize.py`, `tests/test_schemas.py`, `tests/test_quality.py`, `tests/test_exports.py`, `tests/fixtures/hyperliquid/l2_book.json`, `tests/fixtures/hyperliquid/trades.json`, `tests/fixtures/hyperliquid/active_asset_ctx.json`
 
 ## TASKS
-- [x] TASK 1: [RED] Write failing tests for exact-pinned settings loading, release channels, mainnet market-data defaults, and phase-1 scope defaults encoded from `回答.md`.
-- [x] TASK 2: [GREEN] Implement `pyproject.toml`, package bootstrap, and `settings.py` so TASK 1 passes.
-- [x] TASK 3: [RED] Write failing tests for deterministic identifiers and canonical dedup hashing rules.
-- [x] TASK 4: [GREEN] Implement `identifiers.py` so TASK 3 passes.
-- [x] TASK 5: [RED] Write failing tests for `BookEvent`, `BookLevel`, `TradeEvent`, `AssetContextEvent`, channel-specific gap policies, and export path conventions required by phase 1.
-- [x] TASK 6: [GREEN] Implement `models.py`, `policies.py`, and `paths.py` so TASK 5 passes.
-- [x] TASK 7: [REFACTOR] Run the full test command, keep the API consistent with the approved docs, and clean up naming or duplication without widening scope.
+- [x] TASK 1: [RED] Write failing tests for phase-1 collector/storage settings, raw/quarantine path builders, and compressed raw manifest writing.
+- [x] TASK 2: [GREEN] Implement settings/path/storage support so TASK 1 passes without widening scope.
+- [x] TASK 3: [RED] Write failing tests for Hyperliquid fixture normalization and Pandera schema-gate quarantine splitting.
+- [x] TASK 4: [GREEN] Implement `collector.py`, `normalize.py`, and `schemas.py` so TASK 3 passes using fixture replay only.
+- [x] TASK 5: [RED] Write failing tests for DuckDB quality audit, Nautilus compare-ready export bundle, and hftbacktest `.npz` export.
+- [x] TASK 6: [GREEN] Implement `quality.py`, `exports.py`, and any required model/policy extensions so TASK 5 passes.
+- [x] TASK 7: [REFACTOR] Run the full test command, keep the implementation aligned with `.plan/00next.md`, and remove duplication or accidental scope growth.

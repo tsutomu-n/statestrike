@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-from typing import Literal
-
 from typing import Any
+from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
@@ -88,3 +87,15 @@ class AssetContextEvent(FrozenModel):
                 data["oracle_px"]
             )
         return data
+
+
+class ManifestRecord(FrozenModel):
+    capture_session_id: str
+    started_at: str
+    ended_at: str
+    channels: tuple[str, ...]
+    symbols: tuple[str, ...]
+    row_count: int = Field(ge=0)
+    ws_disconnect_count: int = Field(ge=0)
+    reconnect_count: int = Field(ge=0)
+    gap_flags: tuple[str, ...]

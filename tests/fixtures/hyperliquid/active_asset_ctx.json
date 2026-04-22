@@ -1,0 +1,13 @@
+{
+  "channel": "activeAssetCtx",
+  "data": {
+    "coin": "BTC",
+    "ctx": {
+      "markPx": "100.30",
+      "oraclePx": "100.00",
+      "funding": "0.0001",
+      "openInterest": "1234.5",
+      "midPx": "100.20"
+    }
+  }
+}

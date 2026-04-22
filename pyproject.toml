@@ -5,6 +5,7 @@ description = "StateStrike Phase 1 data-platform bootstrap."
 readme = "0422statestrike_senior_se_design_dossier_v1.md"
 requires-python = ">=3.13,<3.14"
 dependencies = [
+  "loguru>=0.7.3",
   "pydantic==2.13.3",
   "pydantic-settings==2.14.0",
 ]
@@ -12,8 +13,10 @@ dependencies = [
 [project.optional-dependencies]
 phase1-data = [
   "duckdb==1.5.2",
+  "pandas==2.3.3",
   "pandera==0.31.1",
   "pybotters==1.11.2",
+  "zstandard==0.25.0",
 ]
 execution = [
   "hftbacktest==2.4.4",

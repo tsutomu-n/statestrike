@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from pathlib import Path
 from typing import Annotated, Literal
 
 from pydantic import Field, field_validator, model_validator
@@ -23,12 +24,31 @@ class Settings(BaseSettings):
     market_data_network: Literal["mainnet", "testnet"] = "mainnet"
     enable_live_orders: bool = False
     enable_addon_live: bool = False
+    data_root: Path = Path("data")
+    flush_interval_ms: int = 1000
+    snapshot_recovery_enabled: bool = True
     source_priority: tuple[SourceName, ...] = ("ws", "info", "s3", "tardis")
     allowed_symbols: Annotated[tuple[str, ...], NoDecode] = Field(default_factory=tuple)
 
     @property
     def release_channels(self) -> tuple[ReleaseChannel, ...]:
         return ("research", "paper", "tiny-live", "live-stable")
+
+    @property
+    def raw_root(self) -> Path:
+        return self.data_root / "raw_ws"
+
+    @property
+    def normalized_root(self) -> Path:
+        return self.data_root / "normalized"
+
+    @property
+    def quarantine_root(self) -> Path:
+        return self.data_root / "quarantine"
+
+    @property
+    def exports_root(self) -> Path:
+        return self.data_root / "exports"
 
     @field_validator("allowed_symbols", mode="before")
     @classmethod
