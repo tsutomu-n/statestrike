@@ -6,6 +6,8 @@ import json
 from datetime import date
 from pathlib import Path
 
+import pytest
+
 from statestrike.collector import CollectorConfig
 from statestrike.settings import Settings
 from statestrike.smoke import (
@@ -226,6 +228,8 @@ def test_run_smoke_campaign_accumulates_daily_artifacts_across_sessions(
     )
 
     assert result.campaign_id == "campaign"
+    assert result.status == "completed"
+    assert result.requested_session_count == 2
     assert result.session_count == 2
     assert result.total_row_count == 6
     assert [session.capture_session_id for session in result.sessions] == [
@@ -244,9 +248,82 @@ def test_run_smoke_campaign_accumulates_daily_artifacts_across_sessions(
     assert result.report_paths["md"].exists()
     campaign_json = json.loads(result.report_paths["json"].read_text(encoding="utf-8"))
     assert campaign_json["campaign_id"] == "campaign"
+    assert campaign_json["status"] == "completed"
+    assert campaign_json["requested_session_count"] == 2
     assert campaign_json["session_count"] == 2
     assert result.final_audit_report_paths["json"].exists()
     assert result.final_export_validation_report_paths["BTC"].exists()
+
+
+def test_run_smoke_campaign_persists_failed_summary_when_later_session_crashes(
+    tmp_path,
+) -> None:
+    call_count = 0
+
+    async def fake_transport(
+        *,
+        config: CollectorConfig,
+        max_messages: int,
+        max_runtime_seconds: int,
+        ping_interval_seconds: int,
+        reconnect_limit: int,
+    ) -> SmokeTransportCapture:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return SmokeTransportCapture(
+                messages=[
+                    load_fixture("l2_book.json"),
+                    load_fixture("trades.json"),
+                    load_fixture("active_asset_ctx.json"),
+                ],
+                recv_ts_start=1713818880100,
+                started_at="2026-04-23T00:00:00Z",
+                ended_at="2026-04-23T00:01:00Z",
+            )
+        raise RuntimeError("synthetic transport failure")
+
+    settings = Settings(
+        data_root=tmp_path,
+        allowed_symbols=("BTC",),
+        smoke_max_messages=4,
+        smoke_max_runtime_seconds=300,
+        smoke_ping_interval_seconds=15,
+        smoke_reconnect_limit=2,
+    )
+
+    with pytest.raises(RuntimeError, match="synthetic transport failure"):
+        asyncio.run(
+            run_smoke_campaign(
+                settings=settings,
+                trading_date=date(2026, 4, 23),
+                transport=fake_transport,
+                capture_session_id="campaign-failed",
+                session_count=2,
+            )
+        )
+
+    summary_path = (
+        tmp_path
+        / "reports"
+        / "smoke_campaign"
+        / "campaign=campaign-failed"
+        / "summary.json"
+    )
+    markdown_path = summary_path.with_suffix(".md")
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+
+    assert summary_path.exists()
+    assert markdown_path.exists()
+    assert summary["campaign_id"] == "campaign-failed"
+    assert summary["status"] == "failed"
+    assert summary["requested_session_count"] == 2
+    assert summary["session_count"] == 1
+    assert summary["total_row_count"] == 3
+    assert summary["error_message"] == "synthetic transport failure"
+    assert summary["sessions"][0]["capture_session_id"] == "campaign-failed-0001"
+    assert Path(summary["final_audit_report_paths"]["json"]).exists()
+    assert "status: failed" in markdown_path.read_text(encoding="utf-8")
 
 
 def test_smoke_main_runs_fake_transport_and_prints_json_summary(
@@ -363,6 +440,8 @@ def test_smoke_main_runs_campaign_mode_and_prints_json_summary(
 
     assert exit_code == 0
     assert summary["campaign_id"] == "campaign-cli"
+    assert summary["status"] == "completed"
+    assert summary["requested_session_count"] == 2
     assert summary["session_count"] == 2
     assert [session["capture_session_id"] for session in summary["sessions"]] == [
         "campaign-cli-0001",
@@ -391,6 +470,67 @@ def test_smoke_main_rejects_non_positive_session_count(tmp_path, capsys) -> None
 
     assert exit_code == 1
     assert "session_count must be at least 1" in captured.err
+
+
+def test_smoke_main_persists_failed_campaign_summary_on_error(
+    tmp_path, capsys
+) -> None:
+    call_count = 0
+
+    async def fake_transport(
+        *,
+        config: CollectorConfig,
+        max_messages: int,
+        max_runtime_seconds: int,
+        ping_interval_seconds: int,
+        reconnect_limit: int,
+    ) -> SmokeTransportCapture:
+        nonlocal call_count
+        call_count += 1
+        if call_count == 1:
+            return SmokeTransportCapture(
+                messages=[
+                    load_fixture("l2_book.json"),
+                    load_fixture("trades.json"),
+                    load_fixture("active_asset_ctx.json"),
+                ],
+                recv_ts_start=1713818880100,
+                started_at="2026-04-23T00:00:00Z",
+                ended_at="2026-04-23T00:01:00Z",
+            )
+        raise RuntimeError("synthetic cli failure")
+
+    exit_code = main(
+        [
+            "--data-root",
+            str(tmp_path),
+            "--allowed-symbols",
+            "BTC",
+            "--date",
+            "2026-04-23",
+            "--capture-session-id",
+            "campaign-cli-failed",
+            "--session-count",
+            "2",
+        ],
+        transport=fake_transport,
+    )
+
+    captured = capsys.readouterr()
+    summary_path = (
+        tmp_path
+        / "reports"
+        / "smoke_campaign"
+        / "campaign=campaign-cli-failed"
+        / "summary.json"
+    )
+    summary = json.loads(summary_path.read_text(encoding="utf-8"))
+
+    assert exit_code == 1
+    assert "synthetic cli failure" in captured.err
+    assert summary["status"] == "failed"
+    assert summary["requested_session_count"] == 2
+    assert summary["session_count"] == 1
 
 
 def test_smoke_main_preserves_env_defaults_and_allows_cli_overrides(

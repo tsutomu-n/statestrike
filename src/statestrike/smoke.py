@@ -7,10 +7,10 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 import sys
 import time
-from typing import Any, Awaitable, Callable
+from typing import Any, Awaitable, Callable, Literal
 
 import pybotters
-from pydantic import BaseModel, ConfigDict
+from pydantic import BaseModel, ConfigDict, Field
 
 from statestrike.collector import (
     CollectorConfig,
@@ -81,14 +81,17 @@ class SmokeCampaignResult(BaseModel):
     campaign_id: str
     started_at: str
     ended_at: str
+    status: Literal["running", "completed", "failed"]
+    requested_session_count: int
     session_count: int
     total_row_count: int
     sessions: tuple[SmokeCampaignSession, ...]
     report_paths: dict[str, Path]
-    final_audit_report_paths: dict[str, Path]
-    final_export_validation_report_paths: dict[str, Path]
-    final_audit_report: QualityAuditReport
-    final_export_validations: dict[str, ExportValidationReport]
+    final_audit_report_paths: dict[str, Path] = Field(default_factory=dict)
+    final_export_validation_report_paths: dict[str, Path] = Field(default_factory=dict)
+    final_audit_report: QualityAuditReport | None = None
+    final_export_validations: dict[str, ExportValidationReport] = Field(default_factory=dict)
+    error_message: str | None = None
 
 
 def run_smoke_batch(
@@ -270,54 +273,81 @@ async def run_smoke_campaign(
 
     campaign_id = capture_session_id or new_capture_session_id()
     started_at = _utc_now_isoformat()
-    sessions: list[SmokeCampaignSession] = []
-    final_result: SmokeBatchResult | None = None
-
-    for session_index in range(session_count):
-        session_capture_id = _campaign_session_id(
-            campaign_id=campaign_id,
-            session_index=session_index,
-        )
-        capture, result = await _run_single_smoke_capture(
-            settings=settings,
-            trading_date=trading_date,
-            transport=transport,
-            capture_session_id=session_capture_id,
-            batch_id=f"{session_index + 1:04d}",
-        )
-        sessions.append(
-            SmokeCampaignSession(
-                capture_session_id=result.capture_session_id,
-                manifest_path=result.manifest_path,
-                row_count=len(capture.messages),
-                ws_disconnect_count=capture.ws_disconnect_count,
-                reconnect_count=capture.reconnect_count,
-                gap_flags=capture.gap_flags,
-            )
-        )
-        final_result = result
-
-    if final_result is None:
-        raise RuntimeError("smoke campaign did not run any sessions")
-
     report_paths = _campaign_report_paths(
         root=settings.data_root,
         campaign_id=campaign_id,
     )
-    result = SmokeCampaignResult(
+    sessions: list[SmokeCampaignSession] = []
+    final_result: SmokeBatchResult | None = None
+
+    try:
+        for session_index in range(session_count):
+            session_capture_id = _campaign_session_id(
+                campaign_id=campaign_id,
+                session_index=session_index,
+            )
+            capture, result = await _run_single_smoke_capture(
+                settings=settings,
+                trading_date=trading_date,
+                transport=transport,
+                capture_session_id=session_capture_id,
+                batch_id=f"{session_index + 1:04d}",
+            )
+            sessions.append(
+                SmokeCampaignSession(
+                    capture_session_id=result.capture_session_id,
+                    manifest_path=result.manifest_path,
+                    row_count=len(capture.messages),
+                    ws_disconnect_count=capture.ws_disconnect_count,
+                    reconnect_count=capture.reconnect_count,
+                    gap_flags=capture.gap_flags,
+                )
+            )
+            final_result = result
+            _write_campaign_reports(
+                result=_build_campaign_result(
+                    campaign_id=campaign_id,
+                    started_at=started_at,
+                    requested_session_count=session_count,
+                    status=(
+                        "completed"
+                        if session_index + 1 == session_count
+                        else "running"
+                    ),
+                    sessions=sessions,
+                    report_paths=report_paths,
+                    final_result=final_result,
+                    error_message=None,
+                )
+            )
+    except Exception as exc:
+        _write_campaign_reports(
+            result=_build_campaign_result(
+                campaign_id=campaign_id,
+                started_at=started_at,
+                requested_session_count=session_count,
+                status="failed",
+                sessions=sessions,
+                report_paths=report_paths,
+                final_result=final_result,
+                error_message=str(exc),
+            )
+        )
+        raise
+
+    if final_result is None:
+        raise RuntimeError("smoke campaign did not run any sessions")
+
+    result = _build_campaign_result(
         campaign_id=campaign_id,
         started_at=started_at,
-        ended_at=_utc_now_isoformat(),
-        session_count=len(sessions),
-        total_row_count=sum(session.row_count for session in sessions),
-        sessions=tuple(sessions),
+        requested_session_count=session_count,
+        status="completed",
+        sessions=sessions,
         report_paths=report_paths,
-        final_audit_report_paths=final_result.audit_report_paths,
-        final_export_validation_report_paths=final_result.export_validation_report_paths,
-        final_audit_report=final_result.audit_report,
-        final_export_validations=final_result.export_validations,
+        final_result=final_result,
+        error_message=None,
     )
-    _write_campaign_reports(result=result)
     return result
 
 
@@ -559,6 +589,45 @@ def _write_campaign_reports(*, result: SmokeCampaignResult) -> None:
     )
 
 
+def _build_campaign_result(
+    *,
+    campaign_id: str,
+    started_at: str,
+    requested_session_count: int,
+    status: Literal["running", "completed", "failed"],
+    sessions: list[SmokeCampaignSession],
+    report_paths: dict[str, Path],
+    final_result: SmokeBatchResult | None,
+    error_message: str | None,
+) -> SmokeCampaignResult:
+    return SmokeCampaignResult(
+        campaign_id=campaign_id,
+        started_at=started_at,
+        ended_at=_utc_now_isoformat(),
+        status=status,
+        requested_session_count=requested_session_count,
+        session_count=len(sessions),
+        total_row_count=sum(session.row_count for session in sessions),
+        sessions=tuple(sessions),
+        report_paths=report_paths,
+        final_audit_report_paths=(
+            final_result.audit_report_paths if final_result is not None else {}
+        ),
+        final_export_validation_report_paths=(
+            final_result.export_validation_report_paths
+            if final_result is not None
+            else {}
+        ),
+        final_audit_report=(
+            final_result.audit_report if final_result is not None else None
+        ),
+        final_export_validations=(
+            final_result.export_validations if final_result is not None else {}
+        ),
+        error_message=error_message,
+    )
+
+
 def _render_audit_markdown(report: QualityAuditReport) -> str:
     lines = [
         "# Quality Audit",
@@ -598,6 +667,8 @@ def _render_campaign_markdown(result: SmokeCampaignResult) -> str:
         f"- campaign_id: {result.campaign_id}",
         f"- started_at: {result.started_at}",
         f"- ended_at: {result.ended_at}",
+        f"- status: {result.status}",
+        f"- requested_session_count: {result.requested_session_count}",
         f"- session_count: {result.session_count}",
         f"- total_row_count: {result.total_row_count}",
         "",
@@ -606,14 +677,23 @@ def _render_campaign_markdown(result: SmokeCampaignResult) -> str:
     for session in result.sessions:
         lines.append(f"- {session.capture_session_id}: rows={session.row_count}")
         lines.append(f"  manifest_path={session.manifest_path}")
-    lines.extend(
-        [
-            "",
-            "## Final Reports",
-            f"- audit_json: {result.final_audit_report_paths['json']}",
-            f"- audit_md: {result.final_audit_report_paths['md']}",
-        ]
-    )
+    if result.error_message is not None:
+        lines.extend(
+            [
+                "",
+                "## Failure",
+                f"- error_message: {result.error_message}",
+            ]
+        )
+    if result.final_audit_report_paths:
+        lines.extend(
+            [
+                "",
+                "## Final Reports",
+                f"- audit_json: {result.final_audit_report_paths['json']}",
+                f"- audit_md: {result.final_audit_report_paths['md']}",
+            ]
+        )
     for symbol, path in sorted(result.final_export_validation_report_paths.items()):
         lines.append(f"- export_validation_{symbol}: {path}")
     return "\n".join(lines).strip() + "\n"
