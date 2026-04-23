@@ -12,6 +12,7 @@ from statestrike.smoke import (
     SmokeTransportCapture,
     main,
     run_smoke_batch,
+    run_smoke_campaign,
     run_smoke_session,
 )
 
@@ -166,6 +167,83 @@ def test_run_smoke_session_uses_transport_hook_and_tracks_reconnects(tmp_path) -
     assert manifest["gap_flags"] == ["ws_reconnect"]
 
 
+def test_run_smoke_campaign_accumulates_daily_artifacts_across_sessions(
+    tmp_path,
+) -> None:
+    captures = [
+        SmokeTransportCapture(
+            messages=[
+                load_fixture("l2_book.json"),
+                load_fixture("trades.json"),
+                load_fixture("active_asset_ctx.json"),
+            ],
+            recv_ts_start=1713818880100,
+            started_at="2026-04-23T00:00:00Z",
+            ended_at="2026-04-23T00:01:00Z",
+        ),
+        SmokeTransportCapture(
+            messages=[
+                load_fixture("l2_book.json"),
+                load_fixture("trades.json"),
+                load_fixture("active_asset_ctx.json"),
+            ],
+            recv_ts_start=1713818881100,
+            started_at="2026-04-23T00:01:00Z",
+            ended_at="2026-04-23T00:02:00Z",
+            ws_disconnect_count=1,
+            reconnect_count=1,
+            gap_flags=("ws_reconnect",),
+        ),
+    ]
+
+    async def fake_transport(
+        *,
+        config: CollectorConfig,
+        max_messages: int,
+        max_runtime_seconds: int,
+        ping_interval_seconds: int,
+        reconnect_limit: int,
+    ) -> SmokeTransportCapture:
+        return captures.pop(0)
+
+    settings = Settings(
+        data_root=tmp_path,
+        allowed_symbols=("BTC",),
+        smoke_max_messages=4,
+        smoke_max_runtime_seconds=300,
+        smoke_ping_interval_seconds=15,
+        smoke_reconnect_limit=2,
+    )
+
+    result = asyncio.run(
+        run_smoke_campaign(
+            settings=settings,
+            trading_date=date(2026, 4, 23),
+            transport=fake_transport,
+            capture_session_id="campaign",
+            session_count=2,
+        )
+    )
+
+    assert result.campaign_id == "campaign"
+    assert result.session_count == 2
+    assert result.total_row_count == 6
+    assert [session.capture_session_id for session in result.sessions] == [
+        "campaign-0001",
+        "campaign-0002",
+    ]
+    assert [session.row_count for session in result.sessions] == [3, 3]
+    assert result.sessions[1].gap_flags == ("ws_reconnect",)
+    assert Path(result.sessions[0].manifest_path).exists()
+    assert Path(result.sessions[1].manifest_path).exists()
+    assert result.final_audit_report.row_counts["book_events"] == 2
+    assert result.final_audit_report.row_counts["book_levels"] == 8
+    assert result.final_audit_report.row_counts["trades"] == 4
+    assert result.final_audit_report.row_counts["asset_ctx"] == 2
+    assert result.final_audit_report_paths["json"].exists()
+    assert result.final_export_validation_report_paths["BTC"].exists()
+
+
 def test_smoke_main_runs_fake_transport_and_prints_json_summary(
     tmp_path, capsys
 ) -> None:
@@ -222,6 +300,90 @@ def test_smoke_main_runs_fake_transport_and_prints_json_summary(
     assert Path(summary["manifest_path"]).exists()
     assert Path(summary["audit_report_paths"]["json"]).exists()
     assert Path(summary["export_validation_report_paths"]["BTC"]).exists()
+
+
+def test_smoke_main_runs_campaign_mode_and_prints_json_summary(
+    tmp_path, capsys
+) -> None:
+    captures = [
+        SmokeTransportCapture(
+            messages=[
+                load_fixture("l2_book.json"),
+                load_fixture("trades.json"),
+                load_fixture("active_asset_ctx.json"),
+            ],
+            recv_ts_start=1713818880100,
+            started_at="2026-04-23T00:00:00Z",
+            ended_at="2026-04-23T00:01:00Z",
+        ),
+        SmokeTransportCapture(
+            messages=[
+                load_fixture("l2_book.json"),
+                load_fixture("trades.json"),
+                load_fixture("active_asset_ctx.json"),
+            ],
+            recv_ts_start=1713818881100,
+            started_at="2026-04-23T00:01:00Z",
+            ended_at="2026-04-23T00:02:00Z",
+        ),
+    ]
+
+    async def fake_transport(
+        *,
+        config: CollectorConfig,
+        max_messages: int,
+        max_runtime_seconds: int,
+        ping_interval_seconds: int,
+        reconnect_limit: int,
+    ) -> SmokeTransportCapture:
+        return captures.pop(0)
+
+    exit_code = main(
+        [
+            "--data-root",
+            str(tmp_path),
+            "--allowed-symbols",
+            "BTC",
+            "--date",
+            "2026-04-23",
+            "--capture-session-id",
+            "campaign-cli",
+            "--session-count",
+            "2",
+        ],
+        transport=fake_transport,
+    )
+
+    summary = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert summary["campaign_id"] == "campaign-cli"
+    assert summary["session_count"] == 2
+    assert [session["capture_session_id"] for session in summary["sessions"]] == [
+        "campaign-cli-0001",
+        "campaign-cli-0002",
+    ]
+    assert Path(summary["sessions"][0]["manifest_path"]).exists()
+    assert Path(summary["sessions"][1]["manifest_path"]).exists()
+    assert summary["final_audit_report"]["row_counts"]["trades"] == 4
+
+
+def test_smoke_main_rejects_non_positive_session_count(tmp_path, capsys) -> None:
+    exit_code = main(
+        [
+            "--data-root",
+            str(tmp_path),
+            "--allowed-symbols",
+            "BTC",
+            "--session-count",
+            "0",
+        ],
+    )
+
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert "session_count must be at least 1" in captured.err
 
 
 def test_smoke_main_preserves_env_defaults_and_allows_cli_overrides(

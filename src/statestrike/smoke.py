@@ -63,6 +63,32 @@ class SmokeTransportCapture(BaseModel):
     gap_flags: tuple[str, ...] = ()
 
 
+class SmokeCampaignSession(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    capture_session_id: str
+    manifest_path: Path
+    row_count: int
+    ws_disconnect_count: int = 0
+    reconnect_count: int = 0
+    gap_flags: tuple[str, ...] = ()
+
+
+class SmokeCampaignResult(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    campaign_id: str
+    started_at: str
+    ended_at: str
+    session_count: int
+    total_row_count: int
+    sessions: tuple[SmokeCampaignSession, ...]
+    final_audit_report_paths: dict[str, Path]
+    final_export_validation_report_paths: dict[str, Path]
+    final_audit_report: QualityAuditReport
+    final_export_validations: dict[str, ExportValidationReport]
+
+
 def run_smoke_batch(
     *,
     root: Path,
@@ -219,6 +245,81 @@ async def run_smoke_session(
     capture_session_id: str | None = None,
     batch_id: str = "0001",
 ) -> SmokeBatchResult:
+    _capture, result = await _run_single_smoke_capture(
+        settings=settings,
+        trading_date=trading_date,
+        transport=transport,
+        capture_session_id=capture_session_id,
+        batch_id=batch_id,
+    )
+    return result
+
+
+async def run_smoke_campaign(
+    *,
+    settings: Settings,
+    session_count: int,
+    trading_date: date | None = None,
+    transport: SmokeTransport | None = None,
+    capture_session_id: str | None = None,
+) -> SmokeCampaignResult:
+    if session_count < 1:
+        raise ValueError("session_count must be at least 1")
+
+    campaign_id = capture_session_id or new_capture_session_id()
+    started_at = _utc_now_isoformat()
+    sessions: list[SmokeCampaignSession] = []
+    final_result: SmokeBatchResult | None = None
+
+    for session_index in range(session_count):
+        session_capture_id = _campaign_session_id(
+            campaign_id=campaign_id,
+            session_index=session_index,
+        )
+        capture, result = await _run_single_smoke_capture(
+            settings=settings,
+            trading_date=trading_date,
+            transport=transport,
+            capture_session_id=session_capture_id,
+            batch_id=f"{session_index + 1:04d}",
+        )
+        sessions.append(
+            SmokeCampaignSession(
+                capture_session_id=result.capture_session_id,
+                manifest_path=result.manifest_path,
+                row_count=len(capture.messages),
+                ws_disconnect_count=capture.ws_disconnect_count,
+                reconnect_count=capture.reconnect_count,
+                gap_flags=capture.gap_flags,
+            )
+        )
+        final_result = result
+
+    if final_result is None:
+        raise RuntimeError("smoke campaign did not run any sessions")
+
+    return SmokeCampaignResult(
+        campaign_id=campaign_id,
+        started_at=started_at,
+        ended_at=_utc_now_isoformat(),
+        session_count=len(sessions),
+        total_row_count=sum(session.row_count for session in sessions),
+        sessions=tuple(sessions),
+        final_audit_report_paths=final_result.audit_report_paths,
+        final_export_validation_report_paths=final_result.export_validation_report_paths,
+        final_audit_report=final_result.audit_report,
+        final_export_validations=final_result.export_validations,
+    )
+
+
+async def _run_single_smoke_capture(
+    *,
+    settings: Settings,
+    trading_date: date | None,
+    transport: SmokeTransport | None,
+    capture_session_id: str | None,
+    batch_id: str,
+) -> tuple[SmokeTransportCapture, SmokeBatchResult]:
     config = settings.build_smoke_collector_config()
     transport = transport or collect_public_smoke_messages
     capture = await transport(
@@ -228,7 +329,7 @@ async def run_smoke_session(
         ping_interval_seconds=settings.smoke_ping_interval_seconds,
         reconnect_limit=settings.smoke_reconnect_limit,
     )
-    return run_smoke_batch(
+    result = run_smoke_batch(
         root=settings.data_root,
         trading_date=trading_date or date.today(),
         messages=capture.messages,
@@ -246,6 +347,7 @@ async def run_smoke_session(
         skew_severe_ms=settings.smoke_skew_severe_ms,
         asset_ctx_stale_threshold_ms=settings.smoke_asset_ctx_stale_threshold_ms,
     )
+    return capture, result
 
 
 async def collect_public_smoke_messages(
@@ -457,6 +559,10 @@ def _hyperliquid_ws_url(network: str) -> str:
     return "wss://api.hyperliquid.xyz/ws"
 
 
+def _campaign_session_id(*, campaign_id: str, session_index: int) -> str:
+    return f"{campaign_id}-{session_index + 1:04d}"
+
+
 def main(
     argv: list[str] | None = None,
     *,
@@ -464,20 +570,31 @@ def main(
 ) -> int:
     args = _parse_args(argv)
     try:
+        if args.session_count < 1:
+            raise ValueError("session_count must be at least 1")
         settings = _build_settings_from_args(args)
-        result = asyncio.run(
-            run_smoke_session(
-                settings=settings,
-                trading_date=(
-                    date.fromisoformat(args.date)
-                    if args.date is not None
-                    else None
-                ),
-                transport=transport,
-                capture_session_id=args.capture_session_id,
-                batch_id=args.batch_id,
+        trading_date = date.fromisoformat(args.date) if args.date is not None else None
+        if args.session_count > 1:
+            result = asyncio.run(
+                run_smoke_campaign(
+                    settings=settings,
+                    session_count=args.session_count,
+                    trading_date=trading_date,
+                    transport=transport,
+                    capture_session_id=args.capture_session_id,
+                )
             )
-        )
+        else:
+            result = asyncio.run(
+                run_smoke_session(
+                    settings=settings,
+                    trading_date=trading_date,
+                    transport=transport,
+                    capture_session_id=args.capture_session_id,
+                    batch_id=args.batch_id,
+                )
+            )
+        
     except Exception as exc:
         print(str(exc), file=sys.stderr)
         return 1
@@ -496,6 +613,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--date")
     parser.add_argument("--capture-session-id")
     parser.add_argument("--batch-id", default="0001")
+    parser.add_argument("--session-count", type=int, default=1)
     parser.add_argument("--max-runtime-seconds", type=int)
     parser.add_argument("--max-messages", type=int)
     parser.add_argument("--ping-interval-seconds", type=int)
