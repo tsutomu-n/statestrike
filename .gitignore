@@ -1,0 +1,33 @@
+# Python bytecode and test caches
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.hypothesis/
+
+# Virtual environments and local env files
+.venv/
+.env
+.env.*
+!.env.example
+
+# Coverage and test reports
+.coverage
+.coverage.*
+htmlcov/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/
+.eggs/
+
+# Runtime data and logs
+data/
+logs/
+*.log
+
+# Local agent/workflow artifacts
+.ai_memory/
+.codex/
