@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Any
 
 import pandas as pd
+import pandera
 import pandera.pandas as pa
 from pydantic import BaseModel, ConfigDict
 
@@ -113,8 +114,44 @@ def validate_records(table: str, records: list[dict[str, Any]]) -> ValidationRes
         frame = pd.DataFrame([record])
         try:
             validated = schema.validate(frame, lazy=True)
-        except Exception:
-            quarantined_rows.append(record)
+        except pandera.errors.SchemaErrors as exc:
+            quarantined_rows.append(
+                {
+                    **record,
+                    "quarantine_reason": _extract_quarantine_reason(exc),
+                    "quarantine_reason_count": _count_failure_reasons(exc),
+                }
+            )
+            continue
+        except Exception as exc:
+            quarantined_rows.append(
+                {
+                    **record,
+                    "quarantine_reason": type(exc).__name__,
+                    "quarantine_reason_count": 1,
+                }
+            )
             continue
         valid_rows.extend(validated.to_dict(orient="records"))
     return ValidationResult(valid_rows=valid_rows, quarantined_rows=quarantined_rows)
+
+
+def _extract_quarantine_reason(exc: pandera.errors.SchemaErrors) -> str:
+    failure_cases = exc.failure_cases
+    reasons: list[str] = []
+    for _, row in failure_cases.iterrows():
+        column = row.get("column")
+        check = row.get("check")
+        if pd.isna(column) or column is None:
+            column = "row"
+        if pd.isna(check) or check is None:
+            check = "schema_error"
+        reason = f"{column}:{check}"
+        if reason not in reasons:
+            reasons.append(reason)
+    return "; ".join(reasons) if reasons else "row:schema_error"
+
+
+def _count_failure_reasons(exc: pandera.errors.SchemaErrors) -> int:
+    reason_string = _extract_quarantine_reason(exc)
+    return len(reason_string.split("; "))

@@ -43,3 +43,5 @@ def test_schema_gate_splits_invalid_trade_rows_to_quarantine() -> None:
     assert result.valid_count == 1
     assert result.quarantined_count == 1
     assert result.quarantined_rows[0]["price"] == 0.0
+    assert result.quarantined_rows[0]["quarantine_reason"] == "price:greater_than(0)"
+    assert result.quarantined_rows[0]["quarantine_reason_count"] == 1

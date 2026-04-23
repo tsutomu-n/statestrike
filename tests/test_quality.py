@@ -78,8 +78,12 @@ def test_quality_audit_summarizes_normalized_tables(tmp_path) -> None:
         symbols=("BTC",),
         skew_warning_ms=45,
         skew_severe_ms=90,
+        asset_ctx_stale_threshold_ms=123456,
     )
 
+    assert report.thresholds.skew_warning_ms == 45
+    assert report.thresholds.skew_severe_ms == 90
+    assert report.thresholds.asset_ctx_stale_threshold_ms == 123456
     assert report.row_counts["book_events"] == 1
     assert report.row_counts["book_levels"] == 4
     assert report.row_counts["trades"] == 2
@@ -88,3 +92,6 @@ def test_quality_audit_summarizes_normalized_tables(tmp_path) -> None:
     assert report.skew_alerts["trades"] == "warning"
     assert report.quarantine_row_counts["trades"] == 1
     assert report.quarantine_rates["trades"] == pytest.approx(1 / 3)
+    assert report.quarantine_reason_counts["trades"] == {
+        "size:greater_than(0)": 1,
+    }

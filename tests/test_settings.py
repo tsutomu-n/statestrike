@@ -64,8 +64,16 @@ def test_settings_expose_phase_one_storage_and_collector_defaults() -> None:
     assert settings.normalized_root == Path("data/normalized")
     assert settings.quarantine_root == Path("data/quarantine")
     assert settings.exports_root == Path("data/exports")
+    assert settings.reports_root == Path("data/reports")
     assert settings.flush_interval_ms == 1000
     assert settings.snapshot_recovery_enabled is True
+    assert settings.smoke_max_runtime_seconds == 3600
+    assert settings.smoke_max_messages == 5000
+    assert settings.smoke_ping_interval_seconds == 30
+    assert settings.smoke_reconnect_limit == 3
+    assert settings.smoke_skew_warning_ms == 250
+    assert settings.smoke_skew_severe_ms == 1000
+    assert settings.smoke_asset_ctx_stale_threshold_ms == 300_000
 
 
 def test_settings_expose_phase15_smoke_defaults(tmp_path: Path) -> None:
@@ -107,3 +115,33 @@ def test_settings_reject_phase15_smoke_without_explicit_small_allowlist(
 
     with pytest.raises(ValueError, match="Phase 1.5 smoke runs support at most 10 symbols"):
         Settings(_env_file=crowded_env).build_smoke_collector_config()
+
+
+def test_settings_allow_phase15_audit_threshold_overrides(tmp_path: Path) -> None:
+    env_file = tmp_path / "phase15-thresholds.env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "STATESTRIKE_ALLOWED_SYMBOLS=BTC,ETH",
+                "STATESTRIKE_SMOKE_SKEW_WARNING_MS=400",
+                "STATESTRIKE_SMOKE_SKEW_SEVERE_MS=1200",
+                "STATESTRIKE_SMOKE_ASSET_CTX_STALE_THRESHOLD_MS=123456",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    settings = Settings(_env_file=env_file)
+
+    assert settings.smoke_skew_warning_ms == 400
+    assert settings.smoke_skew_severe_ms == 1200
+    assert settings.smoke_asset_ctx_stale_threshold_ms == 123456
+
+
+def test_settings_reject_phase15_inverted_audit_thresholds() -> None:
+    with pytest.raises(ValueError, match="smoke_skew_severe_ms must be greater than or equal to smoke_skew_warning_ms"):
+        Settings(
+            allowed_symbols=("BTC",),
+            smoke_skew_warning_ms=1000,
+            smoke_skew_severe_ms=250,
+        )

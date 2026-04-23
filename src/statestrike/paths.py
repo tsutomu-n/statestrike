@@ -36,6 +36,37 @@ def build_export_path(
     )
 
 
+def build_quality_report_path(
+    *,
+    root: Path,
+    trading_date: date,
+    suffix: str,
+) -> Path:
+    return (
+        root
+        / "reports"
+        / "quality"
+        / f"date={trading_date.isoformat()}"
+        / f"audit.{suffix}"
+    )
+
+
+def build_export_validation_report_path(
+    *,
+    root: Path,
+    trading_date: date,
+    symbol: str,
+) -> Path:
+    return (
+        root
+        / "reports"
+        / "export_validation"
+        / f"date={trading_date.isoformat()}"
+        / f"symbol={symbol.upper()}"
+        / "bundle.json"
+    )
+
+
 def build_raw_path(
     *,
     root: Path,

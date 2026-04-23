@@ -13,8 +13,10 @@ from statestrike.storage import _parquet_source
 class QualityAuditReport(BaseModel):
     model_config = ConfigDict(frozen=True)
 
+    thresholds: "QualityAuditThresholds"
     row_counts: dict[str, int]
     quarantine_row_counts: dict[str, int]
+    quarantine_reason_counts: dict[str, dict[str, int]]
     quarantine_rates: dict[str, float]
     gap_count: int = Field(ge=0)
     skew_summary: dict[str, dict[str, int | None]]
@@ -22,6 +24,14 @@ class QualityAuditReport(BaseModel):
     crossed_book_count: int = Field(ge=0)
     zero_or_negative_qty_count: int = Field(ge=0)
     asset_ctx_stale_count: int = Field(ge=0)
+
+
+class QualityAuditThresholds(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    skew_warning_ms: int = Field(ge=0)
+    skew_severe_ms: int = Field(ge=0)
+    asset_ctx_stale_threshold_ms: int = Field(ge=0)
 
 
 def run_quality_audit(
@@ -65,6 +75,18 @@ def run_quality_audit(
             table: _calculate_quarantine_rate(
                 valid_count=row_counts[table],
                 quarantined_count=quarantine_row_counts[table],
+            )
+            for table in tables
+        }
+        quarantine_reason_counts = {
+            table: _summarize_quarantine_reasons(
+                connection=connection,
+                files=_quarantine_files(
+                    quarantine_root=quarantine_root,
+                    table=table,
+                    trading_date=trading_date,
+                    symbols=symbols,
+                ),
             )
             for table in tables
         }
@@ -133,8 +155,14 @@ def run_quality_audit(
         connection.close()
 
     return QualityAuditReport(
+        thresholds=QualityAuditThresholds(
+            skew_warning_ms=skew_warning_ms,
+            skew_severe_ms=skew_severe_ms,
+            asset_ctx_stale_threshold_ms=asset_ctx_stale_threshold_ms,
+        ),
         row_counts=row_counts,
         quarantine_row_counts=quarantine_row_counts,
+        quarantine_reason_counts=quarantine_reason_counts,
         quarantine_rates=quarantine_rates,
         gap_count=0,
         skew_summary=skew_summary,
@@ -190,6 +218,28 @@ def _count_rows(*, connection: duckdb.DuckDBPyConnection, files: list[Path]) -> 
         return 0
     source = _parquet_source(files)
     return int(connection.execute(f"SELECT COUNT(*) FROM {source}").fetchone()[0])
+
+
+def _summarize_quarantine_reasons(
+    *,
+    connection: duckdb.DuckDBPyConnection,
+    files: list[Path],
+) -> dict[str, int]:
+    if not files:
+        return {}
+    source = _parquet_source(files)
+    columns = set(connection.execute(f"SELECT * FROM {source} LIMIT 0").fetchdf().columns)
+    if "quarantine_reason" not in columns:
+        return {}
+    rows = connection.execute(
+        f"""
+        SELECT quarantine_reason, COUNT(*)
+        FROM {source}
+        GROUP BY 1
+        ORDER BY 2 DESC, 1 ASC
+        """
+    ).fetchall()
+    return {str(reason): int(count) for reason, count in rows if reason is not None}
 
 
 def _summarize_skew(

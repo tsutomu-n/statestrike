@@ -5,6 +5,8 @@ from datetime import date
 from pathlib import Path
 
 import duckdb
+from hftbacktest import DEPTH_EVENT, EXCH_EVENT, LOCAL_EVENT, TRADE_EVENT
+from hftbacktest.data import validate_event_order
 import numpy as np
 
 from statestrike.collector import CollectorConfig, collect_market_batch
@@ -79,7 +81,7 @@ def test_export_nautilus_catalog_writes_compare_ready_bundle(tmp_path) -> None:
     assert instrument_df.loc[0, "instrument_id"] == "BTC-USD-PERP.HYPERLIQUID"
 
 
-def test_export_hftbacktest_npz_writes_six_column_array(tmp_path) -> None:
+def test_export_hftbacktest_npz_writes_current_structured_array(tmp_path) -> None:
     root, trading_date = _write_valid_normalized_rows(tmp_path)
 
     npz_path = export_hftbacktest_npz(
@@ -91,8 +93,24 @@ def test_export_hftbacktest_npz_writes_six_column_array(tmp_path) -> None:
 
     data = np.load(npz_path)["data"]
 
-    assert data.shape[1] == 6
-    assert set(data[:, 0].astype(int)) == {2, 4}
+    assert data.dtype.names == (
+        "ev",
+        "exch_ts",
+        "local_ts",
+        "px",
+        "qty",
+        "order_id",
+        "ival",
+        "fval",
+    )
+    validate_event_order(data)
+    assert np.all(data["local_ts"] >= data["exch_ts"])
+    assert {int(code & 0xFF) for code in data["ev"]} == {
+        DEPTH_EVENT,
+        TRADE_EVENT,
+    }
+    assert np.any((data["ev"] & EXCH_EVENT) == EXCH_EVENT)
+    assert np.any((data["ev"] & LOCAL_EVENT) == LOCAL_EVENT)
 
 
 def test_validate_export_bundle_reports_integrity_stats(tmp_path) -> None:
@@ -124,4 +142,4 @@ def test_validate_export_bundle_reports_integrity_stats(tmp_path) -> None:
     assert report.hftbacktest.null_count == 0
     assert report.hftbacktest.exchange_ts_monotonic is True
     assert report.hftbacktest.local_ts_monotonic is True
-    assert report.hftbacktest.event_codes == (2, 4)
+    assert report.hftbacktest.event_codes == (1, 2)

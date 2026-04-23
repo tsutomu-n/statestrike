@@ -49,6 +49,13 @@ class Settings(BaseSettings):
     snapshot_recovery_enabled: bool = True
     source_priority: tuple[SourceName, ...] = ("ws", "info", "s3", "tardis")
     allowed_symbols: Annotated[tuple[str, ...], NoDecode] = Field(default_factory=tuple)
+    smoke_max_runtime_seconds: int = 3600
+    smoke_max_messages: int = 5000
+    smoke_ping_interval_seconds: int = 30
+    smoke_reconnect_limit: int = 3
+    smoke_skew_warning_ms: int = Field(default=250, ge=0)
+    smoke_skew_severe_ms: int = Field(default=1000, ge=0)
+    smoke_asset_ctx_stale_threshold_ms: int = Field(default=300_000, ge=0)
     smoke_channels: Annotated[tuple[SmokeChannel, ...], NoDecode] = (
         "l2Book",
         "trades",
@@ -76,6 +83,10 @@ class Settings(BaseSettings):
     @property
     def exports_root(self) -> Path:
         return self.data_root / "exports"
+
+    @property
+    def reports_root(self) -> Path:
+        return self.data_root / "reports"
 
     @field_validator("allowed_symbols", mode="before")
     @classmethod
@@ -107,6 +118,10 @@ class Settings(BaseSettings):
     def enforce_phase_one_scope(self) -> "Settings":
         if self.enable_live_orders:
             raise ValueError("Phase 1 bootstrap excludes live order path")
+        if self.smoke_skew_severe_ms < self.smoke_skew_warning_ms:
+            raise ValueError(
+                "smoke_skew_severe_ms must be greater than or equal to smoke_skew_warning_ms"
+            )
         return self
 
     def build_smoke_collector_config(self) -> "CollectorConfig":

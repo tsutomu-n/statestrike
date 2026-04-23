@@ -3,7 +3,9 @@ from pathlib import Path
 
 from statestrike.paths import (
     build_export_path,
+    build_export_validation_report_path,
     build_normalized_path,
+    build_quality_report_path,
     build_quarantine_path,
     build_raw_path,
 )
@@ -56,3 +58,25 @@ def test_quarantine_path_uses_table_date_and_symbol_partitions() -> None:
     )
 
     assert path == Path("/data/quarantine/trades/date=2026-04-22/symbol=SOL")
+
+
+def test_quality_report_path_uses_report_kind_and_date() -> None:
+    path = build_quality_report_path(
+        root=Path("/data"),
+        trading_date=date(2026, 4, 22),
+        suffix="json",
+    )
+
+    assert path == Path("/data/reports/quality/date=2026-04-22/audit.json")
+
+
+def test_export_validation_report_path_uses_date_and_symbol() -> None:
+    path = build_export_validation_report_path(
+        root=Path("/data"),
+        trading_date=date(2026, 4, 22),
+        symbol="eth",
+    )
+
+    assert path == Path(
+        "/data/reports/export_validation/date=2026-04-22/symbol=ETH/bundle.json"
+    )

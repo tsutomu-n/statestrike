@@ -1,9 +1,14 @@
 from __future__ import annotations
 
+from contextlib import redirect_stdout
 from datetime import date
+import io
 from pathlib import Path
 
 import duckdb
+from hftbacktest import BUY_EVENT, DEPTH_EVENT, EXCH_EVENT, LOCAL_EVENT, SELL_EVENT, TRADE_EVENT
+from hftbacktest.data import correct_event_order, correct_local_timestamp, validate_event_order
+from hftbacktest.types import event_dtype
 import numpy as np
 import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field
@@ -157,7 +162,7 @@ def export_hftbacktest_npz(
 
     trade_rows = _to_hftbacktest_rows(
         frame=trades,
-        event_code=2,
+        event_code=TRADE_EVENT,
         side_column="side",
         price_column="price",
         size_column="size",
@@ -165,20 +170,28 @@ def export_hftbacktest_npz(
     )
     book_rows = _to_hftbacktest_rows(
         frame=book_levels,
-        event_code=4,
+        event_code=DEPTH_EVENT,
         side_column="side",
         price_column="price",
         size_column="size",
         buy_label="bid",
     )
 
-    arrays = [array for array in (trade_rows, book_rows) if array.size]
+    arrays = [array for array in (trade_rows, book_rows) if len(array)]
     if arrays:
-        data = np.vstack(arrays)
-        ordering = np.lexsort((data[:, 0], data[:, 2], data[:, 1]))
-        data = data[ordering]
+        data = np.concatenate(arrays)
+        with redirect_stdout(io.StringIO()):
+            data = correct_local_timestamp(data.copy(), 0)
+        sorted_exch_index = np.argsort(data["exch_ts"], kind="stable")
+        sorted_local_index = np.argsort(data["local_ts"], kind="stable")
+        data = correct_event_order(
+            data,
+            sorted_exch_index,
+            sorted_local_index,
+        )
+        validate_event_order(data)
     else:
-        data = np.empty((0, 6), dtype=np.float64)
+        data = np.empty(0, dtype=event_dtype)
 
     path = export_dir / f"{symbol.lower()}_market_data.npz"
     np.savez_compressed(path, data=data)
@@ -279,18 +292,19 @@ def _to_hftbacktest_rows(
     buy_label: str,
 ) -> np.ndarray:
     if frame.empty:
-        return np.empty((0, 6), dtype=np.float64)
-    side_values = np.where(frame[side_column].to_numpy() == buy_label, 1, -1)
-    return np.column_stack(
-        [
-            np.full(len(frame), event_code, dtype=np.int64),
-            frame["exchange_ts"].to_numpy(dtype=np.int64),
-            frame["recv_ts"].to_numpy(dtype=np.int64),
-            side_values.astype(np.int64),
-            frame[price_column].to_numpy(dtype=np.float64),
-            frame[size_column].to_numpy(dtype=np.float64),
-        ]
-    )
+        return np.empty(0, dtype=event_dtype)
+    side_flags = np.where(
+        frame[side_column].to_numpy() == buy_label,
+        BUY_EVENT,
+        SELL_EVENT,
+    ).astype(np.uint64)
+    rows = np.zeros(len(frame), dtype=event_dtype)
+    rows["ev"] = side_flags | np.uint64(event_code)
+    rows["exch_ts"] = frame["exchange_ts"].to_numpy(dtype=np.int64)
+    rows["local_ts"] = frame["recv_ts"].to_numpy(dtype=np.int64)
+    rows["px"] = frame[price_column].to_numpy(dtype=np.float64)
+    rows["qty"] = frame[size_column].to_numpy(dtype=np.float64)
+    return rows
 
 
 def _read_export_frame(path: Path) -> pd.DataFrame:
@@ -345,11 +359,15 @@ def _summarize_hftbacktest_npz(path: Path) -> HftbacktestValidation:
             event_codes=(),
         )
     return HftbacktestValidation(
-        row_count=int(data.shape[0]),
-        null_count=int(np.isnan(data).sum()),
-        exchange_ts_monotonic=_is_non_decreasing(data[:, 1]),
-        local_ts_monotonic=_is_non_decreasing(data[:, 2]),
-        event_codes=tuple(sorted({int(code) for code in data[:, 0]})),
+        row_count=int(len(data)),
+        null_count=_count_structured_nulls(data),
+        exchange_ts_monotonic=_is_non_decreasing(
+            data["exch_ts"][(data["ev"] & EXCH_EVENT) == EXCH_EVENT]
+        ),
+        local_ts_monotonic=_is_non_decreasing(
+            data["local_ts"][(data["ev"] & LOCAL_EVENT) == LOCAL_EVENT]
+        ),
+        event_codes=tuple(sorted({int(code & 0xFF) for code in data["ev"]})),
     )
 
 
@@ -357,6 +375,14 @@ def _is_non_decreasing(values: np.ndarray) -> bool:
     if values.size <= 1:
         return True
     return bool(np.all(np.diff(values) >= 0))
+
+
+def _count_structured_nulls(data: np.ndarray) -> int:
+    total = 0
+    for name in data.dtype.names or ():
+        if np.issubdtype(data.dtype[name], np.floating):
+            total += int(np.isnan(data[name]).sum())
+    return total
 
 
 def _read_normalized_table(
