@@ -31,3 +31,8 @@ logs/
 # Local agent/workflow artifacts
 .ai_memory/
 .codex/
+
+
+.memo/
+.plan/
+.tmp/
