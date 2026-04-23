@@ -240,6 +240,11 @@ def test_run_smoke_campaign_accumulates_daily_artifacts_across_sessions(
     assert result.final_audit_report.row_counts["book_levels"] == 8
     assert result.final_audit_report.row_counts["trades"] == 4
     assert result.final_audit_report.row_counts["asset_ctx"] == 2
+    assert result.report_paths["json"].exists()
+    assert result.report_paths["md"].exists()
+    campaign_json = json.loads(result.report_paths["json"].read_text(encoding="utf-8"))
+    assert campaign_json["campaign_id"] == "campaign"
+    assert campaign_json["session_count"] == 2
     assert result.final_audit_report_paths["json"].exists()
     assert result.final_export_validation_report_paths["BTC"].exists()
 
@@ -363,6 +368,8 @@ def test_smoke_main_runs_campaign_mode_and_prints_json_summary(
         "campaign-cli-0001",
         "campaign-cli-0002",
     ]
+    assert Path(summary["report_paths"]["json"]).exists()
+    assert Path(summary["report_paths"]["md"]).exists()
     assert Path(summary["sessions"][0]["manifest_path"]).exists()
     assert Path(summary["sessions"][1]["manifest_path"]).exists()
     assert summary["final_audit_report"]["row_counts"]["trades"] == 4

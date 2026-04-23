@@ -67,6 +67,21 @@ def build_export_validation_report_path(
     )
 
 
+def build_smoke_campaign_report_path(
+    *,
+    root: Path,
+    campaign_id: str,
+    suffix: str,
+) -> Path:
+    return (
+        root
+        / "reports"
+        / "smoke_campaign"
+        / f"campaign={campaign_id}"
+        / f"summary.{suffix}"
+    )
+
+
 def build_raw_path(
     *,
     root: Path,

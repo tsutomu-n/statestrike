@@ -3,6 +3,7 @@ from pathlib import Path
 
 from statestrike.paths import (
     build_export_path,
+    build_smoke_campaign_report_path,
     build_export_validation_report_path,
     build_normalized_path,
     build_quality_report_path,
@@ -79,4 +80,16 @@ def test_export_validation_report_path_uses_date_and_symbol() -> None:
 
     assert path == Path(
         "/data/reports/export_validation/date=2026-04-22/symbol=ETH/bundle.json"
+    )
+
+
+def test_smoke_campaign_report_path_uses_campaign_partition() -> None:
+    path = build_smoke_campaign_report_path(
+        root=Path("/data"),
+        campaign_id="session-campaign",
+        suffix="json",
+    )
+
+    assert path == Path(
+        "/data/reports/smoke_campaign/campaign=session-campaign/summary.json"
     )

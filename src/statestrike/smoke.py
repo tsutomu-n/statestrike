@@ -28,6 +28,7 @@ from statestrike.models import ManifestRecord
 from statestrike.paths import (
     build_export_validation_report_path,
     build_quality_report_path,
+    build_smoke_campaign_report_path,
 )
 from statestrike.quality import QualityAuditReport, run_quality_audit
 from statestrike.schemas import validate_records
@@ -83,6 +84,7 @@ class SmokeCampaignResult(BaseModel):
     session_count: int
     total_row_count: int
     sessions: tuple[SmokeCampaignSession, ...]
+    report_paths: dict[str, Path]
     final_audit_report_paths: dict[str, Path]
     final_export_validation_report_paths: dict[str, Path]
     final_audit_report: QualityAuditReport
@@ -298,18 +300,25 @@ async def run_smoke_campaign(
     if final_result is None:
         raise RuntimeError("smoke campaign did not run any sessions")
 
-    return SmokeCampaignResult(
+    report_paths = _campaign_report_paths(
+        root=settings.data_root,
+        campaign_id=campaign_id,
+    )
+    result = SmokeCampaignResult(
         campaign_id=campaign_id,
         started_at=started_at,
         ended_at=_utc_now_isoformat(),
         session_count=len(sessions),
         total_row_count=sum(session.row_count for session in sessions),
         sessions=tuple(sessions),
+        report_paths=report_paths,
         final_audit_report_paths=final_result.audit_report_paths,
         final_export_validation_report_paths=final_result.export_validation_report_paths,
         final_audit_report=final_result.audit_report,
         final_export_validations=final_result.export_validations,
     )
+    _write_campaign_reports(result=result)
+    return result
 
 
 async def _run_single_smoke_capture(
@@ -521,6 +530,35 @@ def _write_export_validation_report(
     return path
 
 
+def _campaign_report_paths(*, root: Path, campaign_id: str) -> dict[str, Path]:
+    return {
+        "json": build_smoke_campaign_report_path(
+            root=root,
+            campaign_id=campaign_id,
+            suffix="json",
+        ),
+        "md": build_smoke_campaign_report_path(
+            root=root,
+            campaign_id=campaign_id,
+            suffix="md",
+        ),
+    }
+
+
+def _write_campaign_reports(*, result: SmokeCampaignResult) -> None:
+    json_path = result.report_paths["json"]
+    markdown_path = result.report_paths["md"]
+    json_path.parent.mkdir(parents=True, exist_ok=True)
+    json_path.write_text(
+        result.model_dump_json(indent=2),
+        encoding="utf-8",
+    )
+    markdown_path.write_text(
+        _render_campaign_markdown(result),
+        encoding="utf-8",
+    )
+
+
 def _render_audit_markdown(report: QualityAuditReport) -> str:
     lines = [
         "# Quality Audit",
@@ -550,6 +588,34 @@ def _render_audit_markdown(report: QualityAuditReport) -> str:
                 + ", ".join(f"{reason}={count}" for reason, count in reason_counts.items())
             )
         lines.append("")
+    return "\n".join(lines).strip() + "\n"
+
+
+def _render_campaign_markdown(result: SmokeCampaignResult) -> str:
+    lines = [
+        "# Smoke Campaign",
+        "",
+        f"- campaign_id: {result.campaign_id}",
+        f"- started_at: {result.started_at}",
+        f"- ended_at: {result.ended_at}",
+        f"- session_count: {result.session_count}",
+        f"- total_row_count: {result.total_row_count}",
+        "",
+        "## Sessions",
+    ]
+    for session in result.sessions:
+        lines.append(f"- {session.capture_session_id}: rows={session.row_count}")
+        lines.append(f"  manifest_path={session.manifest_path}")
+    lines.extend(
+        [
+            "",
+            "## Final Reports",
+            f"- audit_json: {result.final_audit_report_paths['json']}",
+            f"- audit_md: {result.final_audit_report_paths['md']}",
+        ]
+    )
+    for symbol, path in sorted(result.final_export_validation_report_paths.items()):
+        lines.append(f"- export_validation_{symbol}: {path}")
     return "\n".join(lines).strip() + "\n"
 
 
