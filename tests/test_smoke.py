@@ -26,6 +26,21 @@ def load_fixture(name: str) -> dict:
     return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
 
 
+def with_symbol(message: dict, symbol: str) -> dict:
+    message = copy.deepcopy(message)
+    data = message.get("data")
+    if isinstance(data, dict):
+        if "coin" in data:
+            data["coin"] = symbol
+        if "s" in data:
+            data["s"] = symbol
+    elif isinstance(data, list):
+        for row in data:
+            if "coin" in row:
+                row["coin"] = symbol
+    return message
+
+
 def test_run_smoke_batch_persists_phase15_artifacts(tmp_path) -> None:
     invalid_trades = copy.deepcopy(load_fixture("trades.json"))
     invalid_trades["data"][0]["sz"] = "0.0"
@@ -255,6 +270,74 @@ def test_run_smoke_campaign_accumulates_daily_artifacts_across_sessions(
     assert result.final_export_validation_report_paths["BTC"].exists()
 
 
+def test_run_smoke_campaign_recomputes_final_reports_from_campaign_scope(
+    tmp_path,
+) -> None:
+    captures = [
+        SmokeTransportCapture(
+            messages=[
+                load_fixture("l2_book.json"),
+                load_fixture("trades.json"),
+                load_fixture("active_asset_ctx.json"),
+            ],
+            recv_ts_start=1713818880100,
+            started_at="2026-04-23T00:00:00Z",
+            ended_at="2026-04-23T00:01:00Z",
+        ),
+        SmokeTransportCapture(
+            messages=[
+                with_symbol(load_fixture("l2_book.json"), "ETH"),
+                with_symbol(load_fixture("trades.json"), "ETH"),
+                with_symbol(load_fixture("active_asset_ctx.json"), "ETH"),
+            ],
+            recv_ts_start=1713818881100,
+            started_at="2026-04-23T00:01:00Z",
+            ended_at="2026-04-23T00:02:00Z",
+        ),
+    ]
+
+    async def fake_transport(
+        *,
+        config: CollectorConfig,
+        max_messages: int,
+        max_runtime_seconds: int,
+        ping_interval_seconds: int,
+        reconnect_limit: int,
+    ) -> SmokeTransportCapture:
+        return captures.pop(0)
+
+    settings = Settings(
+        data_root=tmp_path,
+        allowed_symbols=("BTC", "ETH"),
+        smoke_max_messages=4,
+        smoke_max_runtime_seconds=300,
+        smoke_ping_interval_seconds=15,
+        smoke_reconnect_limit=2,
+    )
+
+    result = asyncio.run(
+        run_smoke_campaign(
+            settings=settings,
+            trading_date=date(2026, 4, 23),
+            transport=fake_transport,
+            capture_session_id="campaign-scope",
+            session_count=2,
+        )
+    )
+
+    summary = json.loads(result.report_paths["json"].read_text(encoding="utf-8"))
+
+    assert result.final_audit_report.row_counts["book_events"] == 2
+    assert result.final_audit_report.row_counts["book_levels"] == 8
+    assert result.final_audit_report.row_counts["trades"] == 4
+    assert result.final_audit_report.row_counts["asset_ctx"] == 2
+    assert tuple(result.final_export_validation_report_paths) == ("BTC", "ETH")
+    assert tuple(result.final_export_validations) == ("BTC", "ETH")
+    assert summary["scope"]["allowed_symbols"] == ["BTC", "ETH"]
+    assert summary["scope"]["observed_symbols"] == ["BTC", "ETH"]
+    assert tuple(summary["final_export_validation_report_paths"]) == ("BTC", "ETH")
+
+
 def test_run_smoke_campaign_persists_failed_summary_when_later_session_crashes(
     tmp_path,
 ) -> None:
@@ -418,6 +501,242 @@ def test_run_smoke_campaign_resume_continues_from_persisted_summary(
     assert summary["session_count"] == 2
 
 
+@pytest.mark.parametrize(
+    ("settings_overrides", "resume_date", "expected_fragment"),
+    [
+        ({"allowed_symbols": ("BTC", "ETH")}, date(2026, 4, 23), "allowed_symbols"),
+        ({"market_data_network": "testnet"}, date(2026, 4, 23), "market_data_network"),
+        ({"smoke_skew_warning_ms": 333}, date(2026, 4, 23), "thresholds"),
+        ({}, date(2026, 4, 24), "trading_date"),
+    ],
+)
+def test_run_smoke_campaign_resume_rejects_scope_drift(
+    tmp_path,
+    settings_overrides,
+    resume_date,
+    expected_fragment,
+) -> None:
+    async def initial_transport(
+        *,
+        config: CollectorConfig,
+        max_messages: int,
+        max_runtime_seconds: int,
+        ping_interval_seconds: int,
+        reconnect_limit: int,
+    ) -> SmokeTransportCapture:
+        return SmokeTransportCapture(
+            messages=[
+                load_fixture("l2_book.json"),
+                load_fixture("trades.json"),
+                load_fixture("active_asset_ctx.json"),
+            ],
+            recv_ts_start=1713818880100,
+            started_at="2026-04-23T00:00:00Z",
+            ended_at="2026-04-23T00:01:00Z",
+        )
+
+    resumed_calls = 0
+
+    async def resumed_transport(
+        *,
+        config: CollectorConfig,
+        max_messages: int,
+        max_runtime_seconds: int,
+        ping_interval_seconds: int,
+        reconnect_limit: int,
+    ) -> SmokeTransportCapture:
+        nonlocal resumed_calls
+        resumed_calls += 1
+        return SmokeTransportCapture(
+            messages=[
+                load_fixture("l2_book.json"),
+                load_fixture("trades.json"),
+                load_fixture("active_asset_ctx.json"),
+            ],
+            recv_ts_start=1713818881100,
+            started_at="2026-04-23T00:01:00Z",
+            ended_at="2026-04-23T00:02:00Z",
+        )
+
+    initial_settings = Settings(
+        data_root=tmp_path,
+        allowed_symbols=("BTC",),
+        smoke_max_messages=4,
+        smoke_max_runtime_seconds=300,
+        smoke_ping_interval_seconds=15,
+        smoke_reconnect_limit=2,
+    )
+    asyncio.run(
+        run_smoke_campaign(
+            settings=initial_settings,
+            trading_date=date(2026, 4, 23),
+            transport=initial_transport,
+            capture_session_id="campaign-drift",
+            session_count=1,
+        )
+    )
+
+    resumed_settings_kwargs = {
+        "data_root": tmp_path,
+        "allowed_symbols": ("BTC",),
+        "smoke_max_messages": 4,
+        "smoke_max_runtime_seconds": 300,
+        "smoke_ping_interval_seconds": 15,
+        "smoke_reconnect_limit": 2,
+    }
+    resumed_settings_kwargs.update(settings_overrides)
+    resumed_settings = Settings(**resumed_settings_kwargs)
+    with pytest.raises(ValueError, match=expected_fragment):
+        asyncio.run(
+            run_smoke_campaign(
+                settings=resumed_settings,
+                trading_date=resume_date,
+                transport=resumed_transport,
+                capture_session_id="campaign-drift",
+                session_count=2,
+                resume_campaign=True,
+            )
+        )
+
+    assert resumed_calls == 0
+
+
+def test_run_smoke_campaign_resume_rejects_missing_persisted_artifacts(
+    tmp_path,
+) -> None:
+    async def initial_transport(
+        *,
+        config: CollectorConfig,
+        max_messages: int,
+        max_runtime_seconds: int,
+        ping_interval_seconds: int,
+        reconnect_limit: int,
+    ) -> SmokeTransportCapture:
+        return SmokeTransportCapture(
+            messages=[
+                load_fixture("l2_book.json"),
+                load_fixture("trades.json"),
+                load_fixture("active_asset_ctx.json"),
+            ],
+            recv_ts_start=1713818880100,
+            started_at="2026-04-23T00:00:00Z",
+            ended_at="2026-04-23T00:01:00Z",
+        )
+
+    resumed_calls = 0
+
+    async def resumed_transport(
+        *,
+        config: CollectorConfig,
+        max_messages: int,
+        max_runtime_seconds: int,
+        ping_interval_seconds: int,
+        reconnect_limit: int,
+    ) -> SmokeTransportCapture:
+        nonlocal resumed_calls
+        resumed_calls += 1
+        return SmokeTransportCapture(
+            messages=[
+                load_fixture("l2_book.json"),
+                load_fixture("trades.json"),
+                load_fixture("active_asset_ctx.json"),
+            ],
+            recv_ts_start=1713818881100,
+            started_at="2026-04-23T00:01:00Z",
+            ended_at="2026-04-23T00:02:00Z",
+        )
+
+    settings = Settings(
+        data_root=tmp_path,
+        allowed_symbols=("BTC",),
+        smoke_max_messages=4,
+        smoke_max_runtime_seconds=300,
+        smoke_ping_interval_seconds=15,
+        smoke_reconnect_limit=2,
+    )
+    initial_result = asyncio.run(
+        run_smoke_campaign(
+            settings=settings,
+            trading_date=date(2026, 4, 23),
+            transport=initial_transport,
+            capture_session_id="campaign-artifacts",
+            session_count=1,
+        )
+    )
+
+    missing_path = next(iter(initial_result.sessions[0].normalized_paths.values()))
+    missing_path.unlink()
+
+    with pytest.raises(ValueError, match="missing persisted artifact"):
+        asyncio.run(
+            run_smoke_campaign(
+                settings=settings,
+                trading_date=date(2026, 4, 23),
+                transport=resumed_transport,
+                capture_session_id="campaign-artifacts",
+                session_count=2,
+                resume_campaign=True,
+            )
+        )
+
+    assert resumed_calls == 0
+
+
+def test_run_smoke_campaign_writes_summary_via_atomic_replace(
+    tmp_path,
+    monkeypatch,
+) -> None:
+    replace_targets: list[Path] = []
+    path_cls = type(tmp_path)
+    original_replace = path_cls.replace
+
+    def tracking_replace(self: Path, target: Path) -> Path:
+        replace_targets.append(Path(target))
+        return original_replace(self, target)
+
+    monkeypatch.setattr(path_cls, "replace", tracking_replace)
+
+    async def fake_transport(
+        *,
+        config: CollectorConfig,
+        max_messages: int,
+        max_runtime_seconds: int,
+        ping_interval_seconds: int,
+        reconnect_limit: int,
+    ) -> SmokeTransportCapture:
+        return SmokeTransportCapture(
+            messages=[
+                load_fixture("l2_book.json"),
+                load_fixture("trades.json"),
+                load_fixture("active_asset_ctx.json"),
+            ],
+            recv_ts_start=1713818880100,
+            started_at="2026-04-23T00:00:00Z",
+            ended_at="2026-04-23T00:01:00Z",
+        )
+
+    settings = Settings(
+        data_root=tmp_path,
+        allowed_symbols=("BTC",),
+        smoke_max_messages=4,
+        smoke_max_runtime_seconds=300,
+        smoke_ping_interval_seconds=15,
+        smoke_reconnect_limit=2,
+    )
+    result = asyncio.run(
+        run_smoke_campaign(
+            settings=settings,
+            trading_date=date(2026, 4, 23),
+            transport=fake_transport,
+            capture_session_id="campaign-atomic",
+            session_count=1,
+        )
+    )
+
+    assert result.report_paths["json"] in replace_targets
+    assert result.report_paths["md"] in replace_targets
+
+
 def test_smoke_main_runs_fake_transport_and_prints_json_summary(
     tmp_path, capsys
 ) -> None:
@@ -544,6 +863,84 @@ def test_smoke_main_runs_campaign_mode_and_prints_json_summary(
     assert Path(summary["sessions"][0]["manifest_path"]).exists()
     assert Path(summary["sessions"][1]["manifest_path"]).exists()
     assert summary["final_audit_report"]["row_counts"]["trades"] == 4
+
+
+def test_smoke_main_campaign_mode_seeds_one_session_campaign_that_can_resume(
+    tmp_path, capsys
+) -> None:
+    calls = 0
+
+    async def fake_transport(
+        *,
+        config: CollectorConfig,
+        max_messages: int,
+        max_runtime_seconds: int,
+        ping_interval_seconds: int,
+        reconnect_limit: int,
+    ) -> SmokeTransportCapture:
+        nonlocal calls
+        calls += 1
+        recv_ts_start = 1713818880100 if calls == 1 else 1713818881100
+        started_at = "2026-04-23T00:00:00Z" if calls == 1 else "2026-04-23T00:01:00Z"
+        ended_at = "2026-04-23T00:01:00Z" if calls == 1 else "2026-04-23T00:02:00Z"
+        return SmokeTransportCapture(
+            messages=[
+                load_fixture("l2_book.json"),
+                load_fixture("trades.json"),
+                load_fixture("active_asset_ctx.json"),
+            ],
+            recv_ts_start=recv_ts_start,
+            started_at=started_at,
+            ended_at=ended_at,
+        )
+
+    first_exit_code = main(
+        [
+            "--data-root",
+            str(tmp_path),
+            "--allowed-symbols",
+            "BTC",
+            "--date",
+            "2026-04-23",
+            "--capture-session-id",
+            "campaign-cli-seed",
+            "--session-count",
+            "1",
+            "--campaign-mode",
+        ],
+        transport=fake_transport,
+    )
+    first_summary = json.loads(capsys.readouterr().out)
+
+    second_exit_code = main(
+        [
+            "--data-root",
+            str(tmp_path),
+            "--allowed-symbols",
+            "BTC",
+            "--date",
+            "2026-04-23",
+            "--capture-session-id",
+            "campaign-cli-seed",
+            "--session-count",
+            "2",
+            "--resume-campaign",
+        ],
+        transport=fake_transport,
+    )
+    second_summary = json.loads(capsys.readouterr().out)
+
+    assert first_exit_code == 0
+    assert first_summary["campaign_id"] == "campaign-cli-seed"
+    assert first_summary["session_count"] == 1
+    assert Path(first_summary["report_paths"]["json"]).exists()
+    assert second_exit_code == 0
+    assert calls == 2
+    assert second_summary["session_count"] == 2
+    assert [session["capture_session_id"] for session in second_summary["sessions"]] == [
+        "campaign-cli-seed-0001",
+        "campaign-cli-seed-0002",
+    ]
 
 
 def test_smoke_main_resume_campaign_continues_existing_summary(

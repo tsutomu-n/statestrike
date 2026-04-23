@@ -30,7 +30,7 @@ from statestrike.paths import (
     build_quality_report_path,
     build_smoke_campaign_report_path,
 )
-from statestrike.quality import QualityAuditReport, run_quality_audit
+from statestrike.quality import QualityAuditReport, QualityAuditThresholds, run_quality_audit
 from statestrike.schemas import validate_records
 from statestrike.settings import Settings
 from statestrike.storage import NormalizedWriter, QuarantineWriter, RawWriter
@@ -70,9 +70,26 @@ class SmokeCampaignSession(BaseModel):
     capture_session_id: str
     manifest_path: Path
     row_count: int
+    channels: tuple[str, ...] = ()
+    symbols: tuple[str, ...] = ()
+    raw_paths: dict[str, Path] = Field(default_factory=dict)
+    normalized_paths: dict[str, Path] = Field(default_factory=dict)
+    quarantine_paths: dict[str, Path] = Field(default_factory=dict)
     ws_disconnect_count: int = 0
     reconnect_count: int = 0
     gap_flags: tuple[str, ...] = ()
+
+
+class SmokeCampaignScope(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    trading_date: date
+    allowed_symbols: tuple[str, ...]
+    observed_symbols: tuple[str, ...]
+    market_data_network: Literal["mainnet", "testnet"]
+    smoke_channels: tuple[str, ...]
+    smoke_candle_interval: str | None = None
+    thresholds: QualityAuditThresholds
 
 
 class SmokeCampaignResult(BaseModel):
@@ -86,6 +103,7 @@ class SmokeCampaignResult(BaseModel):
     session_count: int
     total_row_count: int
     sessions: tuple[SmokeCampaignSession, ...]
+    scope: SmokeCampaignScope | None = None
     report_paths: dict[str, Path]
     final_audit_report_paths: dict[str, Path] = Field(default_factory=dict)
     final_export_validation_report_paths: dict[str, Path] = Field(default_factory=dict)
@@ -307,6 +325,11 @@ async def run_smoke_campaign(
             f"resume_campaign requested but no persisted campaign summary found for {campaign_id}"
         )
 
+    campaign_trading_date = _resolve_campaign_trading_date(
+        previous_result=previous_result,
+        trading_date=trading_date,
+    )
+
     started_at = (
         previous_result.started_at
         if previous_result is not None
@@ -319,8 +342,33 @@ async def run_smoke_campaign(
         raise ValueError(
             "session_count must be greater than or equal to persisted session_count"
         )
-    final_result: SmokeBatchResult | None = None
     current_result = previous_result
+    current_scope = _build_campaign_scope(
+        settings=settings,
+        trading_date=campaign_trading_date,
+        sessions=sessions,
+    )
+
+    if previous_result is not None:
+        _validate_resume_scope(
+            persisted_result=previous_result,
+            current_scope=current_scope,
+        )
+        _validate_persisted_campaign_artifacts(previous_result)
+        if len(sessions) == session_count:
+            current_result = _build_campaign_result(
+                campaign_id=campaign_id,
+                started_at=started_at,
+                requested_session_count=session_count,
+                status=previous_result.status,
+                sessions=sessions,
+                scope=current_scope,
+                report_paths=report_paths,
+                error_message=previous_result.error_message,
+                root=settings.data_root,
+            )
+            _write_campaign_reports(result=current_result)
+            return current_result
 
     try:
         for session_index in range(len(sessions), session_count):
@@ -340,12 +388,21 @@ async def run_smoke_campaign(
                     capture_session_id=result.capture_session_id,
                     manifest_path=result.manifest_path,
                     row_count=len(capture.messages),
+                    channels=_artifact_channels(result.raw_paths),
+                    symbols=_artifact_symbols(result.raw_paths),
+                    raw_paths=result.raw_paths,
+                    normalized_paths=result.normalized_paths,
+                    quarantine_paths=result.quarantine_paths,
                     ws_disconnect_count=capture.ws_disconnect_count,
                     reconnect_count=capture.reconnect_count,
                     gap_flags=capture.gap_flags,
                 )
             )
-            final_result = result
+            current_scope = _build_campaign_scope(
+                settings=settings,
+                trading_date=campaign_trading_date,
+                sessions=sessions,
+            )
             current_result = _build_campaign_result(
                 campaign_id=campaign_id,
                 started_at=started_at,
@@ -356,23 +413,28 @@ async def run_smoke_campaign(
                     else "running"
                 ),
                 sessions=sessions,
+                scope=current_scope,
                 report_paths=report_paths,
-                previous_result=current_result,
-                final_result=final_result,
                 error_message=None,
+                root=settings.data_root,
             )
             _write_campaign_reports(result=current_result)
     except Exception as exc:
+        current_scope = _build_campaign_scope(
+            settings=settings,
+            trading_date=campaign_trading_date,
+            sessions=sessions,
+        )
         current_result = _build_campaign_result(
             campaign_id=campaign_id,
             started_at=started_at,
             requested_session_count=session_count,
             status="failed",
             sessions=sessions,
+            scope=current_scope,
             report_paths=report_paths,
-            previous_result=current_result,
-            final_result=final_result,
             error_message=str(exc),
+            root=settings.data_root,
         )
         _write_campaign_reports(result=current_result)
         raise
@@ -556,14 +618,13 @@ def _write_audit_reports(
         trading_date=trading_date,
         suffix="md",
     )
-    json_path.parent.mkdir(parents=True, exist_ok=True)
-    json_path.write_text(
-        report.model_dump_json(indent=2),
-        encoding="utf-8",
+    _write_text_atomic(
+        path=json_path,
+        content=report.model_dump_json(indent=2),
     )
-    markdown_path.write_text(
-        _render_audit_markdown(report),
-        encoding="utf-8",
+    _write_text_atomic(
+        path=markdown_path,
+        content=_render_audit_markdown(report),
     )
     return {
         "json": json_path,
@@ -583,10 +644,9 @@ def _write_export_validation_report(
         trading_date=trading_date,
         symbol=symbol,
     )
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(
-        report.model_dump_json(indent=2),
-        encoding="utf-8",
+    _write_text_atomic(
+        path=path,
+        content=report.model_dump_json(indent=2),
     )
     return path
 
@@ -609,14 +669,13 @@ def _campaign_report_paths(*, root: Path, campaign_id: str) -> dict[str, Path]:
 def _write_campaign_reports(*, result: SmokeCampaignResult) -> None:
     json_path = result.report_paths["json"]
     markdown_path = result.report_paths["md"]
-    json_path.parent.mkdir(parents=True, exist_ok=True)
-    json_path.write_text(
-        result.model_dump_json(indent=2),
-        encoding="utf-8",
+    _write_text_atomic(
+        path=json_path,
+        content=result.model_dump_json(indent=2),
     )
-    markdown_path.write_text(
-        _render_campaign_markdown(result),
-        encoding="utf-8",
+    _write_text_atomic(
+        path=markdown_path,
+        content=_render_campaign_markdown(result),
     )
 
 
@@ -628,7 +687,12 @@ def _load_campaign_result(*, root: Path, campaign_id: str) -> SmokeCampaignResul
     )
     if not path.exists():
         return None
-    return SmokeCampaignResult.model_validate_json(path.read_text(encoding="utf-8"))
+    try:
+        return SmokeCampaignResult.model_validate_json(path.read_text(encoding="utf-8"))
+    except Exception as exc:  # pragma: no cover - defensive path
+        raise ValueError(
+            f"invalid persisted campaign summary for {campaign_id}: {exc}"
+        ) from exc
 
 
 def _build_campaign_result(
@@ -638,11 +702,20 @@ def _build_campaign_result(
     requested_session_count: int,
     status: Literal["running", "completed", "failed"],
     sessions: list[SmokeCampaignSession],
+    scope: SmokeCampaignScope,
     report_paths: dict[str, Path],
-    previous_result: SmokeCampaignResult | None,
-    final_result: SmokeBatchResult | None,
     error_message: str | None,
+    root: Path,
 ) -> SmokeCampaignResult:
+    (
+        audit_report,
+        audit_report_paths,
+        export_validations,
+        export_validation_report_paths,
+    ) = _recompute_campaign_reports(
+        root=root,
+        scope=scope,
+    )
     return SmokeCampaignResult(
         campaign_id=campaign_id,
         started_at=started_at,
@@ -652,41 +725,170 @@ def _build_campaign_result(
         session_count=len(sessions),
         total_row_count=sum(session.row_count for session in sessions),
         sessions=tuple(sessions),
+        scope=scope,
         report_paths=report_paths,
-        final_audit_report_paths=(
-            final_result.audit_report_paths
-            if final_result is not None
-            else (
-                previous_result.final_audit_report_paths if previous_result is not None else {}
-            )
-        ),
-        final_export_validation_report_paths=(
-            final_result.export_validation_report_paths
-            if final_result is not None
-            else (
-                previous_result.final_export_validation_report_paths
-                if previous_result is not None
-                else {}
-            )
-        ),
-        final_audit_report=(
-            final_result.audit_report
-            if final_result is not None
-            else (
-                previous_result.final_audit_report if previous_result is not None else None
-            )
-        ),
-        final_export_validations=(
-            final_result.export_validations
-            if final_result is not None
-            else (
-                previous_result.final_export_validations
-                if previous_result is not None
-                else {}
-            )
-        ),
+        final_audit_report_paths=audit_report_paths,
+        final_export_validation_report_paths=export_validation_report_paths,
+        final_audit_report=audit_report,
+        final_export_validations=export_validations,
         error_message=error_message,
     )
+
+
+def _resolve_campaign_trading_date(
+    *,
+    previous_result: SmokeCampaignResult | None,
+    trading_date: date | None,
+) -> date:
+    if trading_date is not None:
+        return trading_date
+    if previous_result is not None and previous_result.scope is not None:
+        return previous_result.scope.trading_date
+    return date.today()
+
+
+def _build_campaign_scope(
+    *,
+    settings: Settings,
+    trading_date: date,
+    sessions: list[SmokeCampaignSession],
+) -> SmokeCampaignScope:
+    allowed_symbols = tuple(sorted(settings.require_smoke_symbols()))
+    observed_symbols = tuple(
+        sorted({symbol for session in sessions for symbol in session.symbols})
+    )
+    smoke_channels = tuple(settings.smoke_channels)
+    return SmokeCampaignScope(
+        trading_date=trading_date,
+        allowed_symbols=allowed_symbols,
+        observed_symbols=observed_symbols,
+        market_data_network=settings.market_data_network,
+        smoke_channels=smoke_channels,
+        smoke_candle_interval=(
+            settings.smoke_candle_interval if "candle" in smoke_channels else None
+        ),
+        thresholds=QualityAuditThresholds(
+            skew_warning_ms=settings.smoke_skew_warning_ms,
+            skew_severe_ms=settings.smoke_skew_severe_ms,
+            asset_ctx_stale_threshold_ms=settings.smoke_asset_ctx_stale_threshold_ms,
+        ),
+    )
+
+
+def _validate_resume_scope(
+    *,
+    persisted_result: SmokeCampaignResult,
+    current_scope: SmokeCampaignScope,
+) -> None:
+    persisted_scope = persisted_result.scope
+    if persisted_scope is None:
+        raise ValueError(
+            "persisted campaign summary missing scope metadata; cannot safely resume"
+        )
+    mismatches: list[str] = []
+    if persisted_scope.trading_date != current_scope.trading_date:
+        mismatches.append("trading_date")
+    if persisted_scope.allowed_symbols != current_scope.allowed_symbols:
+        mismatches.append("allowed_symbols")
+    if persisted_scope.market_data_network != current_scope.market_data_network:
+        mismatches.append("market_data_network")
+    if persisted_scope.smoke_channels != current_scope.smoke_channels:
+        mismatches.append("smoke_channels")
+    if persisted_scope.smoke_candle_interval != current_scope.smoke_candle_interval:
+        mismatches.append("smoke_candle_interval")
+    if persisted_scope.thresholds != current_scope.thresholds:
+        mismatches.append("thresholds")
+    if mismatches:
+        raise ValueError(
+            "resume_campaign scope mismatch: " + ", ".join(mismatches)
+        )
+
+
+def _validate_persisted_campaign_artifacts(result: SmokeCampaignResult) -> None:
+    missing_paths: list[str] = []
+    for session in result.sessions:
+        required_paths = (
+            [session.manifest_path]
+            + list(session.raw_paths.values())
+            + list(session.normalized_paths.values())
+            + list(session.quarantine_paths.values())
+        )
+        for path in required_paths:
+            if not Path(path).exists():
+                missing_paths.append(str(path))
+                if len(missing_paths) >= 3:
+                    break
+        if len(missing_paths) >= 3:
+            break
+    if missing_paths:
+        raise ValueError(
+            "missing persisted artifact: " + ", ".join(missing_paths)
+        )
+
+
+def _recompute_campaign_reports(
+    *,
+    root: Path,
+    scope: SmokeCampaignScope,
+) -> tuple[
+    QualityAuditReport,
+    dict[str, Path],
+    dict[str, ExportValidationReport],
+    dict[str, Path],
+]:
+    audit_report = run_quality_audit(
+        normalized_root=root,
+        quarantine_root=root,
+        trading_date=scope.trading_date,
+        symbols=scope.allowed_symbols,
+        skew_warning_ms=scope.thresholds.skew_warning_ms,
+        skew_severe_ms=scope.thresholds.skew_severe_ms,
+        asset_ctx_stale_threshold_ms=scope.thresholds.asset_ctx_stale_threshold_ms,
+    )
+    audit_report_paths = _write_audit_reports(
+        root=root,
+        trading_date=scope.trading_date,
+        report=audit_report,
+    )
+    export_validations: dict[str, ExportValidationReport] = {}
+    export_validation_report_paths: dict[str, Path] = {}
+    for symbol in scope.observed_symbols:
+        export_validations[symbol] = validate_export_bundle(
+            export_root=root,
+            trading_date=scope.trading_date,
+            symbol=symbol,
+        )
+        export_validation_report_paths[symbol] = _write_export_validation_report(
+            root=root,
+            trading_date=scope.trading_date,
+            symbol=symbol,
+            report=export_validations[symbol],
+        )
+    return (
+        audit_report,
+        audit_report_paths,
+        export_validations,
+        export_validation_report_paths,
+    )
+
+
+def _artifact_channels(paths: dict[str, Path]) -> tuple[str, ...]:
+    return tuple(sorted({key.split(":", 1)[0] for key in paths}))
+
+
+def _artifact_symbols(paths: dict[str, Path]) -> tuple[str, ...]:
+    return tuple(sorted({key.split(":", 1)[1] for key in paths}))
+
+
+def _write_text_atomic(*, path: Path, content: str) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
+    temp_path = path.with_name(f".{path.name}.{time.time_ns()}.tmp")
+    try:
+        temp_path.write_text(content, encoding="utf-8")
+        temp_path.replace(path)
+    finally:
+        if temp_path.exists():
+            temp_path.unlink()
 
 
 def _render_audit_markdown(report: QualityAuditReport) -> str:
@@ -733,8 +935,29 @@ def _render_campaign_markdown(result: SmokeCampaignResult) -> str:
         f"- session_count: {result.session_count}",
         f"- total_row_count: {result.total_row_count}",
         "",
-        "## Sessions",
     ]
+    if result.scope is not None:
+        lines.extend(
+            [
+                "## Scope",
+                f"- trading_date: {result.scope.trading_date.isoformat()}",
+                "- allowed_symbols: " + ", ".join(result.scope.allowed_symbols),
+                "- observed_symbols: " + ", ".join(result.scope.observed_symbols),
+                f"- market_data_network: {result.scope.market_data_network}",
+                "- smoke_channels: " + ", ".join(result.scope.smoke_channels),
+                (
+                    "- thresholds: "
+                    f"warning={result.scope.thresholds.skew_warning_ms}, "
+                    f"severe={result.scope.thresholds.skew_severe_ms}, "
+                    "asset_ctx_stale="
+                    f"{result.scope.thresholds.asset_ctx_stale_threshold_ms}"
+                ),
+                "",
+                "## Sessions",
+            ]
+        )
+    else:
+        lines.append("## Sessions")
     for session in result.sessions:
         lines.append(f"- {session.capture_session_id}: rows={session.row_count}")
         lines.append(f"  manifest_path={session.manifest_path}")
@@ -783,7 +1006,7 @@ def main(
             raise ValueError("resume_campaign requires explicit capture_session_id")
         settings = _build_settings_from_args(args)
         trading_date = date.fromisoformat(args.date) if args.date is not None else None
-        if args.session_count > 1 or args.resume_campaign:
+        if args.session_count > 1 or args.resume_campaign or args.campaign_mode:
             result = asyncio.run(
                 run_smoke_campaign(
                     settings=settings,
@@ -824,6 +1047,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--capture-session-id")
     parser.add_argument("--batch-id", default="0001")
     parser.add_argument("--session-count", type=int, default=1)
+    parser.add_argument("--campaign-mode", action="store_true")
     parser.add_argument("--resume-campaign", action="store_true")
     parser.add_argument("--max-runtime-seconds", type=int)
     parser.add_argument("--max-messages", type=int)
