@@ -326,6 +326,98 @@ def test_run_smoke_campaign_persists_failed_summary_when_later_session_crashes(
     assert "status: failed" in markdown_path.read_text(encoding="utf-8")
 
 
+def test_run_smoke_campaign_resume_continues_from_persisted_summary(
+    tmp_path,
+) -> None:
+    async def initial_transport(
+        *,
+        config: CollectorConfig,
+        max_messages: int,
+        max_runtime_seconds: int,
+        ping_interval_seconds: int,
+        reconnect_limit: int,
+    ) -> SmokeTransportCapture:
+        return SmokeTransportCapture(
+            messages=[
+                load_fixture("l2_book.json"),
+                load_fixture("trades.json"),
+                load_fixture("active_asset_ctx.json"),
+            ],
+            recv_ts_start=1713818880100,
+            started_at="2026-04-23T00:00:00Z",
+            ended_at="2026-04-23T00:01:00Z",
+        )
+
+    resumed_calls = 0
+
+    async def resumed_transport(
+        *,
+        config: CollectorConfig,
+        max_messages: int,
+        max_runtime_seconds: int,
+        ping_interval_seconds: int,
+        reconnect_limit: int,
+    ) -> SmokeTransportCapture:
+        nonlocal resumed_calls
+        resumed_calls += 1
+        return SmokeTransportCapture(
+            messages=[
+                load_fixture("l2_book.json"),
+                load_fixture("trades.json"),
+                load_fixture("active_asset_ctx.json"),
+            ],
+            recv_ts_start=1713818881100,
+            started_at="2026-04-23T00:01:00Z",
+            ended_at="2026-04-23T00:02:00Z",
+        )
+
+    settings = Settings(
+        data_root=tmp_path,
+        allowed_symbols=("BTC",),
+        smoke_max_messages=4,
+        smoke_max_runtime_seconds=300,
+        smoke_ping_interval_seconds=15,
+        smoke_reconnect_limit=2,
+    )
+
+    initial_result = asyncio.run(
+        run_smoke_campaign(
+            settings=settings,
+            trading_date=date(2026, 4, 23),
+            transport=initial_transport,
+            capture_session_id="campaign-resume",
+            session_count=1,
+        )
+    )
+    resumed_result = asyncio.run(
+        run_smoke_campaign(
+            settings=settings,
+            trading_date=date(2026, 4, 23),
+            transport=resumed_transport,
+            capture_session_id="campaign-resume",
+            session_count=2,
+            resume_campaign=True,
+        )
+    )
+
+    summary = json.loads(resumed_result.report_paths["json"].read_text(encoding="utf-8"))
+
+    assert initial_result.session_count == 1
+    assert resumed_calls == 1
+    assert resumed_result.status == "completed"
+    assert resumed_result.requested_session_count == 2
+    assert resumed_result.session_count == 2
+    assert resumed_result.total_row_count == 6
+    assert resumed_result.started_at == initial_result.started_at
+    assert [session.capture_session_id for session in resumed_result.sessions] == [
+        "campaign-resume-0001",
+        "campaign-resume-0002",
+    ]
+    assert summary["status"] == "completed"
+    assert summary["requested_session_count"] == 2
+    assert summary["session_count"] == 2
+
+
 def test_smoke_main_runs_fake_transport_and_prints_json_summary(
     tmp_path, capsys
 ) -> None:
@@ -452,6 +544,101 @@ def test_smoke_main_runs_campaign_mode_and_prints_json_summary(
     assert Path(summary["sessions"][0]["manifest_path"]).exists()
     assert Path(summary["sessions"][1]["manifest_path"]).exists()
     assert summary["final_audit_report"]["row_counts"]["trades"] == 4
+
+
+def test_smoke_main_resume_campaign_continues_existing_summary(
+    tmp_path, capsys
+) -> None:
+    resumed_calls = 0
+
+    async def resumed_transport(
+        *,
+        config: CollectorConfig,
+        max_messages: int,
+        max_runtime_seconds: int,
+        ping_interval_seconds: int,
+        reconnect_limit: int,
+    ) -> SmokeTransportCapture:
+        nonlocal resumed_calls
+        resumed_calls += 1
+        return SmokeTransportCapture(
+            messages=[
+                load_fixture("l2_book.json"),
+                load_fixture("trades.json"),
+                load_fixture("active_asset_ctx.json"),
+            ],
+            recv_ts_start=1713818881100,
+            started_at="2026-04-23T00:01:00Z",
+            ended_at="2026-04-23T00:02:00Z",
+        )
+
+    settings = Settings(
+        data_root=tmp_path,
+        allowed_symbols=("BTC",),
+        smoke_max_messages=4,
+        smoke_max_runtime_seconds=300,
+        smoke_ping_interval_seconds=15,
+        smoke_reconnect_limit=2,
+    )
+    asyncio.run(
+        run_smoke_campaign(
+            settings=settings,
+            trading_date=date(2026, 4, 23),
+            transport=resumed_transport,
+            capture_session_id="campaign-cli-resume",
+            session_count=1,
+        )
+    )
+    assert resumed_calls == 1
+    resumed_calls = 0
+
+    exit_code = main(
+        [
+            "--data-root",
+            str(tmp_path),
+            "--allowed-symbols",
+            "BTC",
+            "--date",
+            "2026-04-23",
+            "--capture-session-id",
+            "campaign-cli-resume",
+            "--session-count",
+            "2",
+            "--resume-campaign",
+        ],
+        transport=resumed_transport,
+    )
+
+    summary = json.loads(capsys.readouterr().out)
+
+    assert exit_code == 0
+    assert resumed_calls == 1
+    assert summary["status"] == "completed"
+    assert summary["requested_session_count"] == 2
+    assert summary["session_count"] == 2
+    assert [session["capture_session_id"] for session in summary["sessions"]] == [
+        "campaign-cli-resume-0001",
+        "campaign-cli-resume-0002",
+    ]
+
+
+def test_smoke_main_rejects_resume_without_capture_session_id(tmp_path, capsys) -> None:
+    exit_code = main(
+        [
+            "--data-root",
+            str(tmp_path),
+            "--allowed-symbols",
+            "BTC",
+            "--session-count",
+            "2",
+            "--resume-campaign",
+        ],
+    )
+
+    captured = capsys.readouterr()
+
+    assert exit_code == 1
+    assert "resume_campaign requires explicit capture_session_id" in captured.err
 
 
 def test_smoke_main_rejects_non_positive_session_count(tmp_path, capsys) -> None:

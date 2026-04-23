@@ -10,7 +10,7 @@ import time
 from typing import Any, Awaitable, Callable, Literal
 
 import pybotters
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from statestrike.collector import (
     CollectorConfig,
@@ -92,6 +92,24 @@ class SmokeCampaignResult(BaseModel):
     final_audit_report: QualityAuditReport | None = None
     final_export_validations: dict[str, ExportValidationReport] = Field(default_factory=dict)
     error_message: str | None = None
+
+    @model_validator(mode="before")
+    @classmethod
+    def apply_legacy_defaults(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        normalized = dict(data)
+        session_count = int(normalized.get("session_count", 0))
+        normalized.setdefault("requested_session_count", session_count)
+        if "status" not in normalized:
+            normalized["status"] = (
+                "failed" if normalized.get("error_message") else "completed"
+            )
+        normalized.setdefault("report_paths", {})
+        normalized.setdefault("final_audit_report_paths", {})
+        normalized.setdefault("final_export_validation_report_paths", {})
+        normalized.setdefault("final_export_validations", {})
+        return normalized
 
 
 def run_smoke_batch(
@@ -267,21 +285,45 @@ async def run_smoke_campaign(
     trading_date: date | None = None,
     transport: SmokeTransport | None = None,
     capture_session_id: str | None = None,
+    resume_campaign: bool = False,
 ) -> SmokeCampaignResult:
     if session_count < 1:
         raise ValueError("session_count must be at least 1")
+    if resume_campaign and capture_session_id is None:
+        raise ValueError("resume_campaign requires explicit capture_session_id")
 
     campaign_id = capture_session_id or new_capture_session_id()
-    started_at = _utc_now_isoformat()
     report_paths = _campaign_report_paths(
         root=settings.data_root,
         campaign_id=campaign_id,
     )
-    sessions: list[SmokeCampaignSession] = []
+    previous_result = (
+        _load_campaign_result(root=settings.data_root, campaign_id=campaign_id)
+        if resume_campaign
+        else None
+    )
+    if resume_campaign and previous_result is None:
+        raise ValueError(
+            f"resume_campaign requested but no persisted campaign summary found for {campaign_id}"
+        )
+
+    started_at = (
+        previous_result.started_at
+        if previous_result is not None
+        else _utc_now_isoformat()
+    )
+    sessions: list[SmokeCampaignSession] = (
+        list(previous_result.sessions) if previous_result is not None else []
+    )
+    if session_count < len(sessions):
+        raise ValueError(
+            "session_count must be greater than or equal to persisted session_count"
+        )
     final_result: SmokeBatchResult | None = None
+    current_result = previous_result
 
     try:
-        for session_index in range(session_count):
+        for session_index in range(len(sessions), session_count):
             session_capture_id = _campaign_session_id(
                 campaign_id=campaign_id,
                 session_index=session_index,
@@ -304,51 +346,40 @@ async def run_smoke_campaign(
                 )
             )
             final_result = result
-            _write_campaign_reports(
-                result=_build_campaign_result(
-                    campaign_id=campaign_id,
-                    started_at=started_at,
-                    requested_session_count=session_count,
-                    status=(
-                        "completed"
-                        if session_index + 1 == session_count
-                        else "running"
-                    ),
-                    sessions=sessions,
-                    report_paths=report_paths,
-                    final_result=final_result,
-                    error_message=None,
-                )
-            )
-    except Exception as exc:
-        _write_campaign_reports(
-            result=_build_campaign_result(
+            current_result = _build_campaign_result(
                 campaign_id=campaign_id,
                 started_at=started_at,
                 requested_session_count=session_count,
-                status="failed",
+                status=(
+                    "completed"
+                    if session_index + 1 == session_count
+                    else "running"
+                ),
                 sessions=sessions,
                 report_paths=report_paths,
+                previous_result=current_result,
                 final_result=final_result,
-                error_message=str(exc),
+                error_message=None,
             )
+            _write_campaign_reports(result=current_result)
+    except Exception as exc:
+        current_result = _build_campaign_result(
+            campaign_id=campaign_id,
+            started_at=started_at,
+            requested_session_count=session_count,
+            status="failed",
+            sessions=sessions,
+            report_paths=report_paths,
+            previous_result=current_result,
+            final_result=final_result,
+            error_message=str(exc),
         )
+        _write_campaign_reports(result=current_result)
         raise
 
-    if final_result is None:
-        raise RuntimeError("smoke campaign did not run any sessions")
-
-    result = _build_campaign_result(
-        campaign_id=campaign_id,
-        started_at=started_at,
-        requested_session_count=session_count,
-        status="completed",
-        sessions=sessions,
-        report_paths=report_paths,
-        final_result=final_result,
-        error_message=None,
-    )
-    return result
+    if current_result is not None:
+        return current_result
+    raise RuntimeError("smoke campaign did not run any sessions")
 
 
 async def _run_single_smoke_capture(
@@ -589,6 +620,17 @@ def _write_campaign_reports(*, result: SmokeCampaignResult) -> None:
     )
 
 
+def _load_campaign_result(*, root: Path, campaign_id: str) -> SmokeCampaignResult | None:
+    path = build_smoke_campaign_report_path(
+        root=root,
+        campaign_id=campaign_id,
+        suffix="json",
+    )
+    if not path.exists():
+        return None
+    return SmokeCampaignResult.model_validate_json(path.read_text(encoding="utf-8"))
+
+
 def _build_campaign_result(
     *,
     campaign_id: str,
@@ -597,6 +639,7 @@ def _build_campaign_result(
     status: Literal["running", "completed", "failed"],
     sessions: list[SmokeCampaignSession],
     report_paths: dict[str, Path],
+    previous_result: SmokeCampaignResult | None,
     final_result: SmokeBatchResult | None,
     error_message: str | None,
 ) -> SmokeCampaignResult:
@@ -611,18 +654,36 @@ def _build_campaign_result(
         sessions=tuple(sessions),
         report_paths=report_paths,
         final_audit_report_paths=(
-            final_result.audit_report_paths if final_result is not None else {}
+            final_result.audit_report_paths
+            if final_result is not None
+            else (
+                previous_result.final_audit_report_paths if previous_result is not None else {}
+            )
         ),
         final_export_validation_report_paths=(
             final_result.export_validation_report_paths
             if final_result is not None
-            else {}
+            else (
+                previous_result.final_export_validation_report_paths
+                if previous_result is not None
+                else {}
+            )
         ),
         final_audit_report=(
-            final_result.audit_report if final_result is not None else None
+            final_result.audit_report
+            if final_result is not None
+            else (
+                previous_result.final_audit_report if previous_result is not None else None
+            )
         ),
         final_export_validations=(
-            final_result.export_validations if final_result is not None else {}
+            final_result.export_validations
+            if final_result is not None
+            else (
+                previous_result.final_export_validations
+                if previous_result is not None
+                else {}
+            )
         ),
         error_message=error_message,
     )
@@ -718,9 +779,11 @@ def main(
     try:
         if args.session_count < 1:
             raise ValueError("session_count must be at least 1")
+        if args.resume_campaign and args.capture_session_id is None:
+            raise ValueError("resume_campaign requires explicit capture_session_id")
         settings = _build_settings_from_args(args)
         trading_date = date.fromisoformat(args.date) if args.date is not None else None
-        if args.session_count > 1:
+        if args.session_count > 1 or args.resume_campaign:
             result = asyncio.run(
                 run_smoke_campaign(
                     settings=settings,
@@ -728,6 +791,7 @@ def main(
                     trading_date=trading_date,
                     transport=transport,
                     capture_session_id=args.capture_session_id,
+                    resume_campaign=args.resume_campaign,
                 )
             )
         else:
@@ -760,6 +824,7 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--capture-session-id")
     parser.add_argument("--batch-id", default="0001")
     parser.add_argument("--session-count", type=int, default=1)
+    parser.add_argument("--resume-campaign", action="store_true")
     parser.add_argument("--max-runtime-seconds", type=int)
     parser.add_argument("--max-messages", type=int)
     parser.add_argument("--ping-interval-seconds", type=int)
