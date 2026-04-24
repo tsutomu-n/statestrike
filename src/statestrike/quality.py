@@ -18,12 +18,21 @@ class QualityAuditReport(BaseModel):
     quarantine_row_counts: dict[str, int]
     quarantine_reason_counts: dict[str, dict[str, int]]
     quarantine_rates: dict[str, float]
+    quarantine_alerts: dict[str, str]
     gap_count: int = Field(ge=0)
     skew_summary: dict[str, dict[str, int | None]]
+    symbol_skew_summary: dict[str, dict[str, dict[str, int | None]]]
     skew_alerts: dict[str, str]
     crossed_book_count: int = Field(ge=0)
     zero_or_negative_qty_count: int = Field(ge=0)
     asset_ctx_stale_count: int = Field(ge=0)
+    duplicate_trade_count: int = Field(ge=0)
+    book_epoch_switch_count: int = Field(ge=0)
+    non_monotonic_exchange_ts_count: int = Field(ge=0)
+    non_monotonic_recv_ts_count: int = Field(ge=0)
+    empty_snapshot_count: int = Field(ge=0)
+    trade_gap_count: int = Field(ge=0)
+    asset_ctx_gap_count: int = Field(ge=0)
 
 
 class QualityAuditThresholds(BaseModel):
@@ -32,6 +41,9 @@ class QualityAuditThresholds(BaseModel):
     skew_warning_ms: int = Field(ge=0)
     skew_severe_ms: int = Field(ge=0)
     asset_ctx_stale_threshold_ms: int = Field(ge=0)
+    trade_gap_threshold_ms: int = Field(ge=0)
+    quarantine_warning_rate: float = Field(ge=0.0)
+    quarantine_severe_rate: float = Field(ge=0.0)
 
 
 def run_quality_audit(
@@ -43,6 +55,9 @@ def run_quality_audit(
     skew_warning_ms: int = 250,
     skew_severe_ms: int = 1_000,
     asset_ctx_stale_threshold_ms: int = 300_000,
+    trade_gap_threshold_ms: int = 60_000,
+    quarantine_warning_rate: float = 0.001,
+    quarantine_severe_rate: float = 0.01,
 ) -> QualityAuditReport:
     connection = duckdb.connect()
     try:
@@ -78,6 +93,14 @@ def run_quality_audit(
             )
             for table in tables
         }
+        quarantine_alerts = {
+            table: _classify_quarantine_rate(
+                rate=quarantine_rates[table],
+                warning_rate=quarantine_warning_rate,
+                severe_rate=quarantine_severe_rate,
+            )
+            for table in tables
+        }
         quarantine_reason_counts = {
             table: _summarize_quarantine_reasons(
                 connection=connection,
@@ -101,6 +124,21 @@ def run_quality_audit(
                 ),
             )
             for table in ("book_events", "trades", "asset_ctx")
+        }
+        symbol_skew_summary = {
+            symbol: {
+                table: _summarize_skew(
+                    connection=connection,
+                    files=_table_files(
+                        normalized_root=normalized_root,
+                        table=table,
+                        trading_date=trading_date,
+                        symbols=(symbol,),
+                    ),
+                )
+                for table in ("book_events", "trades", "asset_ctx")
+            }
+            for symbol in symbols
         }
         skew_alerts = {
             table: _classify_skew(
@@ -151,6 +189,79 @@ def run_quality_audit(
             ),
             stale_threshold_ms=asset_ctx_stale_threshold_ms,
         )
+        duplicate_trade_count = _count_duplicate_trades(
+            connection=connection,
+            files=_table_files(
+                normalized_root=normalized_root,
+                table="trades",
+                trading_date=trading_date,
+                symbols=symbols,
+            ),
+        )
+        book_epoch_switch_count = _count_book_epoch_switches(
+            connection=connection,
+            files=_table_files(
+                normalized_root=normalized_root,
+                table="book_events",
+                trading_date=trading_date,
+                symbols=symbols,
+            ),
+        )
+        trade_gap_count = _count_trade_gaps(
+            connection=connection,
+            files=_table_files(
+                normalized_root=normalized_root,
+                table="trades",
+                trading_date=trading_date,
+                symbols=symbols,
+            ),
+            gap_threshold_ms=trade_gap_threshold_ms,
+        )
+        asset_ctx_gap_count = _count_asset_ctx_gaps(
+            connection=connection,
+            files=_table_files(
+                normalized_root=normalized_root,
+                table="asset_ctx",
+                trading_date=trading_date,
+                symbols=symbols,
+            ),
+            gap_threshold_ms=asset_ctx_stale_threshold_ms,
+        )
+        non_monotonic_exchange_ts_count = sum(
+            _count_non_monotonic_timestamps(
+                connection=connection,
+                files=_table_files(
+                    normalized_root=normalized_root,
+                    table=table,
+                    trading_date=trading_date,
+                    symbols=symbols,
+                ),
+                target_column="exchange_ts",
+            )
+            for table in ("book_events", "trades", "asset_ctx")
+        )
+        non_monotonic_recv_ts_count = sum(
+            _count_non_monotonic_timestamps(
+                connection=connection,
+                files=_table_files(
+                    normalized_root=normalized_root,
+                    table=table,
+                    trading_date=trading_date,
+                    symbols=symbols,
+                ),
+                target_column="recv_ts",
+            )
+            for table in ("book_events", "trades", "asset_ctx")
+        )
+        empty_snapshot_count = _count_empty_snapshots(
+            connection=connection,
+            files=_table_files(
+                normalized_root=normalized_root,
+                table="book_events",
+                trading_date=trading_date,
+                symbols=symbols,
+            ),
+        )
     finally:
         connection.close()
 
@@ -159,17 +270,29 @@ def run_quality_audit(
             skew_warning_ms=skew_warning_ms,
             skew_severe_ms=skew_severe_ms,
             asset_ctx_stale_threshold_ms=asset_ctx_stale_threshold_ms,
+            trade_gap_threshold_ms=trade_gap_threshold_ms,
+            quarantine_warning_rate=quarantine_warning_rate,
+            quarantine_severe_rate=quarantine_severe_rate,
         ),
         row_counts=row_counts,
         quarantine_row_counts=quarantine_row_counts,
         quarantine_reason_counts=quarantine_reason_counts,
         quarantine_rates=quarantine_rates,
-        gap_count=0,
+        quarantine_alerts=quarantine_alerts,
+        gap_count=book_epoch_switch_count + trade_gap_count + asset_ctx_gap_count,
         skew_summary=skew_summary,
+        symbol_skew_summary=symbol_skew_summary,
         skew_alerts=skew_alerts,
         crossed_book_count=crossed_book_count,
         zero_or_negative_qty_count=non_positive_size_count,
         asset_ctx_stale_count=asset_ctx_stale_count,
+        duplicate_trade_count=duplicate_trade_count,
+        book_epoch_switch_count=book_epoch_switch_count,
+        non_monotonic_exchange_ts_count=non_monotonic_exchange_ts_count,
+        non_monotonic_recv_ts_count=non_monotonic_recv_ts_count,
+        empty_snapshot_count=empty_snapshot_count,
+        trade_gap_count=trade_gap_count,
+        asset_ctx_gap_count=asset_ctx_gap_count,
     )
 
 
@@ -294,6 +417,19 @@ def _classify_skew(
     return "ok"
 
 
+def _classify_quarantine_rate(
+    *,
+    rate: float,
+    warning_rate: float,
+    severe_rate: float,
+) -> str:
+    if rate >= severe_rate:
+        return "severe"
+    if rate >= warning_rate:
+        return "warning"
+    return "ok"
+
+
 def _count_crossed_books(
     *,
     connection: duckdb.DuckDBPyConnection,
@@ -356,5 +492,170 @@ def _count_stale_asset_ctx(
             WHERE ABS(recv_ts - exchange_ts) > ?
             """,
             [stale_threshold_ms],
+        ).fetchone()[0]
+    )
+
+
+def _count_duplicate_trades(
+    *,
+    connection: duckdb.DuckDBPyConnection,
+    files: list[Path],
+) -> int:
+    if not files:
+        return 0
+    source = _parquet_source(files)
+    return int(
+        connection.execute(
+            f"""
+            SELECT COALESCE(SUM(duplicate_count - 1), 0)
+            FROM (
+                SELECT dedup_hash, COUNT(*) AS duplicate_count
+                FROM {source}
+                GROUP BY 1
+                HAVING COUNT(*) > 1
+            )
+            """
+        ).fetchone()[0]
+    )
+
+
+def _count_book_epoch_switches(
+    *,
+    connection: duckdb.DuckDBPyConnection,
+    files: list[Path],
+) -> int:
+    if not files:
+        return 0
+    source = _parquet_source(files)
+    return int(
+        connection.execute(
+            f"""
+            SELECT COALESCE(SUM(epoch_count - 1), 0)
+            FROM (
+                SELECT symbol, COUNT(DISTINCT book_epoch) AS epoch_count
+                FROM {source}
+                GROUP BY 1
+            )
+            """
+        ).fetchone()[0]
+    )
+
+
+def _count_trade_gaps(
+    *,
+    connection: duckdb.DuckDBPyConnection,
+    files: list[Path],
+    gap_threshold_ms: int,
+) -> int:
+    if not files:
+        return 0
+    source = _parquet_source(files)
+    return int(
+        connection.execute(
+            f"""
+            WITH ordered AS (
+                SELECT
+                    symbol,
+                    exchange_ts,
+                    LAG(exchange_ts) OVER (
+                        PARTITION BY symbol
+                        ORDER BY exchange_ts, recv_ts, dedup_hash
+                    ) AS prev_exchange_ts
+                FROM {source}
+            )
+            SELECT COUNT(*)
+            FROM ordered
+            WHERE prev_exchange_ts IS NOT NULL
+              AND exchange_ts - prev_exchange_ts > ?
+            """,
+            [gap_threshold_ms],
+        ).fetchone()[0]
+    )
+
+
+def _count_asset_ctx_gaps(
+    *,
+    connection: duckdb.DuckDBPyConnection,
+    files: list[Path],
+    gap_threshold_ms: int,
+) -> int:
+    if not files:
+        return 0
+    source = _parquet_source(files)
+    return int(
+        connection.execute(
+            f"""
+            WITH ordered AS (
+                SELECT
+                    symbol,
+                    exchange_ts,
+                    LAG(exchange_ts) OVER (
+                        PARTITION BY symbol
+                        ORDER BY exchange_ts, recv_ts, dedup_hash
+                    ) AS prev_exchange_ts
+                FROM {source}
+            )
+            SELECT COUNT(*)
+            FROM ordered
+            WHERE prev_exchange_ts IS NOT NULL
+              AND exchange_ts - prev_exchange_ts > ?
+            """,
+            [gap_threshold_ms],
+        ).fetchone()[0]
+    )
+
+
+def _count_non_monotonic_timestamps(
+    *,
+    connection: duckdb.DuckDBPyConnection,
+    files: list[Path],
+    target_column: str,
+) -> int:
+    if not files:
+        return 0
+    source = _parquet_source(files)
+    order_by = (
+        "recv_ts, exchange_ts, dedup_hash"
+        if target_column == "exchange_ts"
+        else "exchange_ts, recv_ts, dedup_hash"
+    )
+    return int(
+        connection.execute(
+            f"""
+            WITH ordered AS (
+                SELECT
+                    symbol,
+                    {target_column} AS current_value,
+                    LAG({target_column}) OVER (
+                        PARTITION BY symbol
+                        ORDER BY {order_by}
+                    ) AS previous_value
+                FROM {source}
+            )
+            SELECT COUNT(*)
+            FROM ordered
+            WHERE previous_value IS NOT NULL
+              AND current_value < previous_value
+            """
+        ).fetchone()[0]
+    )
+
+
+def _count_empty_snapshots(
+    *,
+    connection: duckdb.DuckDBPyConnection,
+    files: list[Path],
+) -> int:
+    if not files:
+        return 0
+    source = _parquet_source(files)
+    return int(
+        connection.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM {source}
+            WHERE event_kind IN ('snapshot', 'recovery_snapshot')
+              AND (n_bids = 0 OR n_asks = 0)
+            """
         ).fetchone()[0]
     )

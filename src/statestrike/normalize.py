@@ -35,18 +35,39 @@ def normalize_l2_book(
         "symbol": coin,
         "exchange_ts": int(data["time"]),
         "recv_ts": recv_ts,
-        "event_kind": "snapshot",
+        "event_kind": (
+            "recovery_snapshot" if reconnect_epoch > 0 or book_epoch > 1 else "snapshot"
+        ),
         "source": source,
         "raw_msg_hash": raw_msg_hash,
+        "dedup_hash": book_event_id,
         "n_bids": len(levels[0]),
         "n_asks": len(levels[1]),
     }
     book_levels: list[dict[str, Any]] = []
     for side_name, side_levels in (("bid", levels[0]), ("ask", levels[1])):
         for level_idx, level in enumerate(side_levels):
+            level_dedup_hash = canonical_hash(
+                {
+                    "book_event_id": book_event_id,
+                    "side": side_name,
+                    "level_idx": level_idx,
+                    "price": str(level["px"]),
+                    "size": str(level["sz"]),
+                }
+            )
             book_levels.append(
                 {
                     "book_event_id": book_event_id,
+                    "capture_session_id": capture_session_id,
+                    "reconnect_epoch": reconnect_epoch,
+                    "book_epoch": book_epoch,
+                    "symbol": coin,
+                    "exchange_ts": int(data["time"]),
+                    "recv_ts": recv_ts,
+                    "source": source,
+                    "raw_msg_hash": raw_msg_hash,
+                    "dedup_hash": level_dedup_hash,
                     "side": side_name,
                     "level_idx": level_idx,
                     "price": float(level["px"]),
@@ -60,6 +81,7 @@ def normalize_trades(
     *,
     message: dict[str, Any],
     capture_session_id: str,
+    reconnect_epoch: int = 0,
     recv_ts: int,
     source: str,
 ) -> list[dict[str, Any]]:
@@ -88,6 +110,7 @@ def normalize_trades(
                 "size": float(trade["sz"]),
                 "side": "buy" if trade["side"] == "B" else "sell",
                 "capture_session_id": capture_session_id,
+                "reconnect_epoch": reconnect_epoch,
                 "source": source,
                 "raw_msg_hash": raw_msg_hash,
                 "dedup_hash": dedup_hash,
@@ -100,6 +123,7 @@ def normalize_active_asset_ctx(
     *,
     message: dict[str, Any],
     capture_session_id: str,
+    reconnect_epoch: int = 0,
     recv_ts: int,
     source: str,
 ) -> dict[str, Any]:
@@ -127,6 +151,7 @@ def normalize_active_asset_ctx(
     base.update(
         {
             "capture_session_id": capture_session_id,
+            "reconnect_epoch": reconnect_epoch,
             "source": source,
             "raw_msg_hash": raw_msg_hash,
             "dedup_hash": canonical_hash(

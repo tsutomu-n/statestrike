@@ -66,7 +66,13 @@ def test_settings_expose_phase_one_storage_and_collector_defaults() -> None:
     assert settings.exports_root == Path("data/exports")
     assert settings.reports_root == Path("data/reports")
     assert settings.flush_interval_ms == 1000
+    assert settings.heartbeat_timeout_ms == 30_000
+    assert settings.reconnect_backoff_initial_ms == 1_000
+    assert settings.reconnect_backoff_max_ms == 30_000
     assert settings.snapshot_recovery_enabled is True
+    assert settings.book_snapshot_refresh_on_reconnect is True
+    assert settings.max_subscriptions_per_connection == 64
+    assert settings.max_messages_per_minute_guard is None
     assert settings.smoke_max_runtime_seconds == 3600
     assert settings.smoke_max_messages == 5000
     assert settings.smoke_ping_interval_seconds == 30
@@ -94,8 +100,20 @@ def test_settings_expose_phase15_smoke_defaults(tmp_path: Path) -> None:
     )
     assert settings.smoke_candle_interval == "1m"
     assert smoke_config.allowed_symbols == ("BTC", "ETH", "SOL")
+    assert smoke_config.run_mode == "network"
     assert smoke_config.channels == settings.smoke_channels
     assert smoke_config.candle_interval == "1m"
+    assert smoke_config.heartbeat_timeout_ms == settings.heartbeat_timeout_ms
+    assert smoke_config.reconnect_backoff_initial_ms == settings.reconnect_backoff_initial_ms
+    assert smoke_config.reconnect_backoff_max_ms == settings.reconnect_backoff_max_ms
+    assert (
+        smoke_config.book_snapshot_refresh_on_reconnect
+        == settings.book_snapshot_refresh_on_reconnect
+    )
+    assert (
+        smoke_config.max_subscriptions_per_connection
+        == settings.max_subscriptions_per_connection
+    )
 
 
 def test_settings_reject_phase15_smoke_without_explicit_small_allowlist(
@@ -144,4 +162,16 @@ def test_settings_reject_phase15_inverted_audit_thresholds() -> None:
             allowed_symbols=("BTC",),
             smoke_skew_warning_ms=1000,
             smoke_skew_severe_ms=250,
+        )
+
+
+def test_settings_reject_inverted_reconnect_backoff_bounds() -> None:
+    with pytest.raises(
+        ValueError,
+        match="reconnect_backoff_max_ms must be greater than or equal to reconnect_backoff_initial_ms",
+    ):
+        Settings(
+            allowed_symbols=("BTC",),
+            reconnect_backoff_initial_ms=5_000,
+            reconnect_backoff_max_ms=1_000,
         )

@@ -37,12 +37,34 @@ def test_normalize_l2_book_fixture_into_event_and_levels() -> None:
     assert {level["side"] for level in book_levels} == {"bid", "ask"}
 
 
+def test_normalize_l2_book_marks_recovery_snapshot_after_reconnect() -> None:
+    message = load_fixture("l2_book.json")
+
+    book_event, book_levels = normalize_l2_book(
+        message=message,
+        capture_session_id="session-1",
+        reconnect_epoch=2,
+        book_epoch=3,
+        recv_ts=1713818880100,
+        source="ws",
+    )
+
+    assert book_event["event_kind"] == "recovery_snapshot"
+    assert book_event["dedup_hash"] == book_event["book_event_id"]
+    assert book_levels[0]["capture_session_id"] == "session-1"
+    assert book_levels[0]["reconnect_epoch"] == 2
+    assert book_levels[0]["book_epoch"] == 3
+    assert book_levels[0]["symbol"] == "BTC"
+    assert book_levels[0]["dedup_hash"]
+
+
 def test_normalize_trades_fixture_into_trade_rows() -> None:
     message = load_fixture("trades.json")
 
     rows = normalize_trades(
         message=message,
         capture_session_id="session-1",
+        reconnect_epoch=1,
         recv_ts=1713818880101,
         source="ws",
     )
@@ -50,6 +72,7 @@ def test_normalize_trades_fixture_into_trade_rows() -> None:
     assert len(rows) == 2
     assert rows[0]["symbol"] == "BTC"
     assert rows[0]["side"] == "buy"
+    assert rows[0]["reconnect_epoch"] == 1
     assert rows[1]["side"] == "sell"
 
 
@@ -59,10 +82,12 @@ def test_normalize_asset_context_fixture_into_row() -> None:
     row = normalize_active_asset_ctx(
         message=message,
         capture_session_id="session-1",
+        reconnect_epoch=4,
         recv_ts=1713818880102,
         source="ws",
     )
 
     assert row["symbol"] == "BTC"
     assert row["mark_px"] == 100.3
+    assert row["reconnect_epoch"] == 4
     assert round(row["basis"], 6) == 0.003

@@ -246,18 +246,46 @@ def _join_book_levels(
         return pd.DataFrame(
             columns=[
                 "instrument_id",
+                "capture_session_id",
+                "reconnect_epoch",
+                "book_epoch",
                 "book_event_id",
                 "symbol",
                 "exchange_ts",
                 "recv_ts",
                 "event_kind",
                 "source",
+                "raw_msg_hash",
+                "dedup_hash",
                 "side",
                 "level_idx",
                 "price",
                 "size",
             ]
         )
+    required_columns = {
+        "capture_session_id",
+        "reconnect_epoch",
+        "book_epoch",
+        "symbol",
+        "exchange_ts",
+        "recv_ts",
+        "source",
+        "raw_msg_hash",
+        "dedup_hash",
+    }
+    if required_columns.issubset(set(book_levels.columns)):
+        joined = book_levels.copy()
+        if "event_kind" not in joined.columns:
+            if book_events.empty:
+                joined["event_kind"] = "snapshot"
+            else:
+                event_kinds = book_events[["book_event_id", "event_kind"]]
+                joined = joined.merge(event_kinds, on="book_event_id", how="left")
+        joined.insert(0, "instrument_id", instrument_id)
+        return joined.sort_values(
+            by=["exchange_ts", "recv_ts", "book_event_id", "side", "level_idx"]
+        ).reset_index(drop=True)
     if book_events.empty:
         joined = book_levels.copy()
         joined.insert(0, "instrument_id", instrument_id)

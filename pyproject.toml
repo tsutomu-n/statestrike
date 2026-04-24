@@ -10,6 +10,9 @@ dependencies = [
   "pydantic-settings==2.14.0",
 ]
 
+[project.scripts]
+statestrike = "statestrike.cli:main"
+
 [project.optional-dependencies]
 phase1-data = [
   "duckdb==1.5.2",

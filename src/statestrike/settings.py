@@ -46,7 +46,13 @@ class Settings(BaseSettings):
     enable_addon_live: bool = False
     data_root: Path = Path("data")
     flush_interval_ms: int = 1000
+    heartbeat_timeout_ms: int = 30_000
+    reconnect_backoff_initial_ms: int = 1_000
+    reconnect_backoff_max_ms: int = 30_000
     snapshot_recovery_enabled: bool = True
+    book_snapshot_refresh_on_reconnect: bool = True
+    max_subscriptions_per_connection: int = 64
+    max_messages_per_minute_guard: int | None = None
     source_priority: tuple[SourceName, ...] = ("ws", "info", "s3", "tardis")
     allowed_symbols: Annotated[tuple[str, ...], NoDecode] = Field(default_factory=tuple)
     smoke_max_runtime_seconds: int = 3600
@@ -56,6 +62,9 @@ class Settings(BaseSettings):
     smoke_skew_warning_ms: int = Field(default=250, ge=0)
     smoke_skew_severe_ms: int = Field(default=1000, ge=0)
     smoke_asset_ctx_stale_threshold_ms: int = Field(default=300_000, ge=0)
+    smoke_trade_gap_threshold_ms: int = Field(default=60_000, ge=0)
+    smoke_quarantine_warning_rate: float = Field(default=0.001, ge=0.0)
+    smoke_quarantine_severe_rate: float = Field(default=0.01, ge=0.0)
     smoke_channels: Annotated[tuple[SmokeChannel, ...], NoDecode] = (
         "l2Book",
         "trades",
@@ -118,9 +127,21 @@ class Settings(BaseSettings):
     def enforce_phase_one_scope(self) -> "Settings":
         if self.enable_live_orders:
             raise ValueError("Phase 1 bootstrap excludes live order path")
+        if self.heartbeat_timeout_ms <= 0:
+            raise ValueError("heartbeat_timeout_ms must be positive")
+        if self.reconnect_backoff_initial_ms <= 0:
+            raise ValueError("reconnect_backoff_initial_ms must be positive")
+        if self.reconnect_backoff_max_ms < self.reconnect_backoff_initial_ms:
+            raise ValueError(
+                "reconnect_backoff_max_ms must be greater than or equal to reconnect_backoff_initial_ms"
+            )
         if self.smoke_skew_severe_ms < self.smoke_skew_warning_ms:
             raise ValueError(
                 "smoke_skew_severe_ms must be greater than or equal to smoke_skew_warning_ms"
+            )
+        if self.smoke_quarantine_severe_rate < self.smoke_quarantine_warning_rate:
+            raise ValueError(
+                "smoke_quarantine_severe_rate must be greater than or equal to smoke_quarantine_warning_rate"
             )
         return self
 
@@ -128,11 +149,18 @@ class Settings(BaseSettings):
         from statestrike.collector import CollectorConfig
 
         return CollectorConfig(
+            run_mode="network",
             allowed_symbols=self.require_smoke_symbols(),
             source_priority=self.source_priority,
             market_data_network=self.market_data_network,
             flush_interval_ms=self.flush_interval_ms,
+            heartbeat_timeout_ms=self.heartbeat_timeout_ms,
+            reconnect_backoff_initial_ms=self.reconnect_backoff_initial_ms,
+            reconnect_backoff_max_ms=self.reconnect_backoff_max_ms,
             snapshot_recovery_enabled=self.snapshot_recovery_enabled,
+            book_snapshot_refresh_on_reconnect=self.book_snapshot_refresh_on_reconnect,
+            max_subscriptions_per_connection=self.max_subscriptions_per_connection,
+            max_messages_per_minute_guard=self.max_messages_per_minute_guard,
             channels=self.smoke_channels,
             candle_interval=(
                 self.smoke_candle_interval

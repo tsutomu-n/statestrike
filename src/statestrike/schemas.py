@@ -20,16 +20,27 @@ BOOK_EVENTS_SCHEMA = pa.DataFrameSchema(
         "event_kind": pa.Column(str, pa.Check.isin(["snapshot", "delta", "recovery_snapshot"])),
         "source": pa.Column(str, pa.Check.isin(["ws", "info", "s3", "tardis"])),
         "raw_msg_hash": pa.Column(str),
+        "dedup_hash": pa.Column(str),
         "n_bids": pa.Column(int, pa.Check.ge(0)),
         "n_asks": pa.Column(int, pa.Check.ge(0)),
     },
     strict=True,
     coerce=True,
+    ordered=True,
 )
 
 BOOK_LEVELS_SCHEMA = pa.DataFrameSchema(
     {
         "book_event_id": pa.Column(str),
+        "capture_session_id": pa.Column(str),
+        "reconnect_epoch": pa.Column(int, pa.Check.ge(0)),
+        "book_epoch": pa.Column(int, pa.Check.ge(0)),
+        "symbol": pa.Column(str),
+        "exchange_ts": pa.Column(int, pa.Check.ge(0)),
+        "recv_ts": pa.Column(int, pa.Check.ge(0)),
+        "source": pa.Column(str, pa.Check.isin(["ws", "info", "s3", "tardis"])),
+        "raw_msg_hash": pa.Column(str),
+        "dedup_hash": pa.Column(str),
         "side": pa.Column(str, pa.Check.isin(["bid", "ask"])),
         "level_idx": pa.Column(int, pa.Check.ge(0)),
         "price": pa.Column(float, pa.Check.gt(0)),
@@ -37,6 +48,7 @@ BOOK_LEVELS_SCHEMA = pa.DataFrameSchema(
     },
     strict=True,
     coerce=True,
+    ordered=True,
 )
 
 TRADES_SCHEMA = pa.DataFrameSchema(
@@ -49,12 +61,14 @@ TRADES_SCHEMA = pa.DataFrameSchema(
         "size": pa.Column(float, pa.Check.gt(0)),
         "side": pa.Column(str, pa.Check.isin(["buy", "sell"])),
         "capture_session_id": pa.Column(str),
+        "reconnect_epoch": pa.Column(int, pa.Check.ge(0)),
         "source": pa.Column(str, pa.Check.isin(["ws", "info", "s3", "tardis"])),
         "raw_msg_hash": pa.Column(str),
         "dedup_hash": pa.Column(str),
     },
     strict=True,
     coerce=True,
+    ordered=True,
 )
 
 ASSET_CTX_SCHEMA = pa.DataFrameSchema(
@@ -71,12 +85,14 @@ ASSET_CTX_SCHEMA = pa.DataFrameSchema(
         "basis": pa.Column(float),
         "next_funding_ts": pa.Column(int, pa.Check.ge(0)),
         "capture_session_id": pa.Column(str),
+        "reconnect_epoch": pa.Column(int, pa.Check.ge(0)),
         "source": pa.Column(str, pa.Check.isin(["ws", "info", "s3", "tardis"])),
         "raw_msg_hash": pa.Column(str),
         "dedup_hash": pa.Column(str),
     },
     strict=True,
     coerce=True,
+    ordered=True,
 )
 
 
@@ -118,6 +134,7 @@ def validate_records(table: str, records: list[dict[str, Any]]) -> ValidationRes
             quarantined_rows.append(
                 {
                     **record,
+                    "quarantine_category": "schema",
                     "quarantine_reason": _extract_quarantine_reason(exc),
                     "quarantine_reason_count": _count_failure_reasons(exc),
                 }
@@ -127,6 +144,7 @@ def validate_records(table: str, records: list[dict[str, Any]]) -> ValidationRes
             quarantined_rows.append(
                 {
                     **record,
+                    "quarantine_category": "runtime",
                     "quarantine_reason": type(exc).__name__,
                     "quarantine_reason_count": 1,
                 }

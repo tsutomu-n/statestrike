@@ -33,11 +33,19 @@ CandleInterval = Literal[
 class CollectorConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
+    run_mode: Literal["fixture", "network"] = "fixture"
+    ws_url_override: str | None = None
     allowed_symbols: tuple[str, ...]
     source_priority: tuple[Literal["ws", "info", "s3", "tardis"], ...]
     market_data_network: Literal["mainnet", "testnet"]
     flush_interval_ms: int
+    heartbeat_timeout_ms: int = 30_000
+    reconnect_backoff_initial_ms: int = 1_000
+    reconnect_backoff_max_ms: int = 30_000
     snapshot_recovery_enabled: bool
+    book_snapshot_refresh_on_reconnect: bool = True
+    max_subscriptions_per_connection: int = 64
+    max_messages_per_minute_guard: int | None = None
     channels: tuple[CollectorChannel, ...] = (
         "l2Book",
         "trades",
@@ -51,6 +59,21 @@ class CollectorConfig(BaseModel):
             raise ValueError("candle_interval requires the candle channel")
         if "candle" in self.channels and self.candle_interval is None:
             raise ValueError("candle channel requires candle_interval")
+        if self.heartbeat_timeout_ms <= 0:
+            raise ValueError("heartbeat_timeout_ms must be positive")
+        if self.reconnect_backoff_initial_ms <= 0:
+            raise ValueError("reconnect_backoff_initial_ms must be positive")
+        if self.reconnect_backoff_max_ms < self.reconnect_backoff_initial_ms:
+            raise ValueError(
+                "reconnect_backoff_max_ms must be greater than or equal to reconnect_backoff_initial_ms"
+            )
+        if self.max_subscriptions_per_connection <= 0:
+            raise ValueError("max_subscriptions_per_connection must be positive")
+        if (
+            self.max_messages_per_minute_guard is not None
+            and self.max_messages_per_minute_guard <= 0
+        ):
+            raise ValueError("max_messages_per_minute_guard must be positive")
         return self
 
 
@@ -78,6 +101,8 @@ def build_subscription_requests(config: CollectorConfig) -> list[dict[str, Any]]
                     "subscription": subscription,
                 }
             )
+    if len(requests) > config.max_subscriptions_per_connection:
+        raise ValueError("subscription count exceeds max_subscriptions_per_connection")
     return requests
 
 
@@ -124,6 +149,7 @@ def collect_market_batch(
                 normalize_trades(
                     message=message,
                     capture_session_id=capture_session_id,
+                    reconnect_epoch=reconnect_epoch,
                     recv_ts=recv_ts,
                     source="ws",
                 )
@@ -133,6 +159,7 @@ def collect_market_batch(
                 normalize_active_asset_ctx(
                     message=message,
                     capture_session_id=capture_session_id,
+                    reconnect_epoch=reconnect_epoch,
                     recv_ts=recv_ts,
                     source="ws",
                 )

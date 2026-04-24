@@ -18,6 +18,7 @@ def test_schema_gate_accepts_valid_trade_rows() -> None:
     rows = normalize_trades(
         message=load_fixture("trades.json"),
         capture_session_id="session-1",
+        reconnect_epoch=0,
         recv_ts=1713818880101,
         source="ws",
     )
@@ -32,6 +33,7 @@ def test_schema_gate_splits_invalid_trade_rows_to_quarantine() -> None:
     rows = normalize_trades(
         message=load_fixture("trades.json"),
         capture_session_id="session-1",
+        reconnect_epoch=0,
         recv_ts=1713818880101,
         source="ws",
     )
@@ -43,5 +45,6 @@ def test_schema_gate_splits_invalid_trade_rows_to_quarantine() -> None:
     assert result.valid_count == 1
     assert result.quarantined_count == 1
     assert result.quarantined_rows[0]["price"] == 0.0
+    assert result.quarantined_rows[0]["quarantine_category"] == "schema"
     assert result.quarantined_rows[0]["quarantine_reason"] == "price:greater_than(0)"
     assert result.quarantined_rows[0]["quarantine_reason_count"] == 1

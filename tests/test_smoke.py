@@ -6,6 +6,7 @@ import json
 from datetime import date
 from pathlib import Path
 
+import duckdb
 import pytest
 
 from statestrike.collector import CollectorConfig
@@ -100,6 +101,9 @@ def test_run_smoke_batch_persists_phase15_artifacts(tmp_path) -> None:
         "skew_warning_ms": 40,
         "skew_severe_ms": 80,
         "asset_ctx_stale_threshold_ms": 123456,
+        "trade_gap_threshold_ms": 60000,
+        "quarantine_warning_rate": 0.001,
+        "quarantine_severe_rate": 0.01,
     }
     assert audit_json["quarantine_reason_counts"]["trades"] == {
         "size:greater_than(0)": 1
@@ -182,6 +186,62 @@ def test_run_smoke_session_uses_transport_hook_and_tracks_reconnects(tmp_path) -
     assert manifest["ws_disconnect_count"] == 1
     assert manifest["reconnect_count"] == 1
     assert manifest["gap_flags"] == ["ws_reconnect"]
+
+
+def test_run_smoke_session_propagates_runtime_epochs_into_normalized_rows(tmp_path) -> None:
+    async def fake_transport(
+        *,
+        config: CollectorConfig,
+        max_messages: int,
+        max_runtime_seconds: int,
+        ping_interval_seconds: int,
+        reconnect_limit: int,
+    ) -> SmokeTransportCapture:
+        return SmokeTransportCapture(
+            messages=[
+                load_fixture("l2_book.json"),
+                load_fixture("trades.json"),
+                load_fixture("active_asset_ctx.json"),
+            ],
+            recv_ts_start=1713818880100,
+            started_at="2026-04-23T00:00:00Z",
+            ended_at="2026-04-23T00:05:00Z",
+            ws_disconnect_count=2,
+            reconnect_count=2,
+            reconnect_epoch=2,
+            book_epoch=7,
+            gap_flags=("ws_reconnect",),
+        )
+
+    settings = Settings(
+        data_root=tmp_path,
+        allowed_symbols=("BTC",),
+        smoke_max_messages=4,
+        smoke_max_runtime_seconds=300,
+        smoke_ping_interval_seconds=15,
+        smoke_reconnect_limit=2,
+    )
+
+    result = asyncio.run(
+        run_smoke_session(
+            settings=settings,
+            trading_date=date(2026, 4, 23),
+            transport=fake_transport,
+            capture_session_id="session-epochs",
+        )
+    )
+
+    book_events_path = result.normalized_paths["book_events:BTC"]
+    connection = duckdb.connect()
+    try:
+        reconnect_epoch, book_epoch = connection.execute(
+            f"SELECT reconnect_epoch, book_epoch FROM read_parquet('{book_events_path.as_posix()}')"
+        ).fetchone()
+    finally:
+        connection.close()
+
+    assert reconnect_epoch == 2
+    assert book_epoch == 7
 
 
 def test_run_smoke_campaign_accumulates_daily_artifacts_across_sessions(
@@ -1185,6 +1245,9 @@ def test_smoke_main_preserves_env_defaults_and_allows_cli_overrides(
         "skew_warning_ms": 222,
         "skew_severe_ms": 888,
         "asset_ctx_stale_threshold_ms": 123456,
+        "trade_gap_threshold_ms": 60000,
+        "quarantine_warning_rate": 0.001,
+        "quarantine_severe_rate": 0.01,
     }
 
 

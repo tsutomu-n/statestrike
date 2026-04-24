@@ -9,12 +9,10 @@ import sys
 import time
 from typing import Any, Awaitable, Callable, Literal
 
-import pybotters
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
 from statestrike.collector import (
     CollectorConfig,
-    build_subscription_requests,
     collect_market_batch,
 )
 from statestrike.exports import (
@@ -31,6 +29,7 @@ from statestrike.paths import (
     build_smoke_campaign_report_path,
 )
 from statestrike.quality import QualityAuditReport, QualityAuditThresholds, run_quality_audit
+from statestrike.runtime import collect_public_runtime_capture
 from statestrike.schemas import validate_records
 from statestrike.settings import Settings
 from statestrike.storage import NormalizedWriter, QuarantineWriter, RawWriter
@@ -61,6 +60,8 @@ class SmokeTransportCapture(BaseModel):
     ended_at: str
     ws_disconnect_count: int = 0
     reconnect_count: int = 0
+    reconnect_epoch: int = 0
+    book_epoch: int = 1
     gap_flags: tuple[str, ...] = ()
 
 
@@ -149,6 +150,9 @@ def run_smoke_batch(
     skew_warning_ms: int = 250,
     skew_severe_ms: int = 1_000,
     asset_ctx_stale_threshold_ms: int = 300_000,
+    trade_gap_threshold_ms: int = 60_000,
+    quarantine_warning_rate: float = 0.001,
+    quarantine_severe_rate: float = 0.01,
 ) -> SmokeBatchResult:
     capture_session_id = capture_session_id or new_capture_session_id()
     started_at = started_at or _utc_now_isoformat()
@@ -242,6 +246,9 @@ def run_smoke_batch(
         skew_warning_ms=skew_warning_ms,
         skew_severe_ms=skew_severe_ms,
         asset_ctx_stale_threshold_ms=asset_ctx_stale_threshold_ms,
+        trade_gap_threshold_ms=trade_gap_threshold_ms,
+        quarantine_warning_rate=quarantine_warning_rate,
+        quarantine_severe_rate=quarantine_severe_rate,
     )
     audit_report_paths = _write_audit_reports(
         root=root,
@@ -469,7 +476,12 @@ async def _run_single_smoke_capture(
         batch_id=batch_id,
         capture_session_id=capture_session_id,
         recv_ts_start=capture.recv_ts_start,
-        reconnect_epoch=0,
+        reconnect_epoch=(
+            capture.reconnect_epoch
+            if capture.reconnect_epoch > 0
+            else capture.reconnect_count
+        ),
+        book_epoch=capture.book_epoch,
         manifest_reconnect_count=capture.reconnect_count,
         started_at=capture.started_at,
         ended_at=capture.ended_at,
@@ -478,6 +490,9 @@ async def _run_single_smoke_capture(
         skew_warning_ms=settings.smoke_skew_warning_ms,
         skew_severe_ms=settings.smoke_skew_severe_ms,
         asset_ctx_stale_threshold_ms=settings.smoke_asset_ctx_stale_threshold_ms,
+        trade_gap_threshold_ms=settings.smoke_trade_gap_threshold_ms,
+        quarantine_warning_rate=settings.smoke_quarantine_warning_rate,
+        quarantine_severe_rate=settings.smoke_quarantine_severe_rate,
     )
     return capture, result
 
@@ -490,77 +505,23 @@ async def collect_public_smoke_messages(
     ping_interval_seconds: int,
     reconnect_limit: int,
 ) -> SmokeTransportCapture:
-    requests = build_subscription_requests(config)
-    queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
-    stop_event = asyncio.Event()
-    expected_acks = max(1, len(requests))
-    subscription_response_count = 0
-    reconnect_count = 0
-
-    def on_message(message: dict[str, Any], _ws: Any) -> None:
-        nonlocal reconnect_count, subscription_response_count
-        channel = message.get("channel")
-        if channel == "subscriptionResponse":
-            subscription_response_count += 1
-            reconnect_count = max(0, (subscription_response_count // expected_acks) - 1)
-            if reconnect_count > reconnect_limit:
-                stop_event.set()
-            return
-        if channel == "pong":
-            return
-        if channel in config.channels:
-            queue.put_nowait(message)
-            if queue.qsize() >= max_messages:
-                stop_event.set()
-
-    started_at = _utc_now_isoformat()
-    recv_ts_start = int(time.time_ns() // 1_000_000)
-    messages: list[dict[str, Any]] = []
-
-    async with pybotters.Client() as client:
-        app = client.ws_connect(
-            _hyperliquid_ws_url(config.market_data_network),
-            send_json=requests,
-            hdlr_json=on_message,
-            heartbeat=float(ping_interval_seconds),
-            auth=None,
-        )
-        deadline = time.monotonic() + max_runtime_seconds
-        while (
-            len(messages) < max_messages
-            and time.monotonic() < deadline
-            and not stop_event.is_set()
-        ):
-            timeout = min(float(ping_interval_seconds), deadline - time.monotonic())
-            if timeout <= 0:
-                break
-            try:
-                message = await asyncio.wait_for(queue.get(), timeout=timeout)
-            except asyncio.TimeoutError:
-                current_ws = app.current_ws
-                if current_ws is not None:
-                    try:
-                        await current_ws.send_json({"method": "ping"})
-                    except Exception:
-                        pass
-                continue
-            messages.append(message)
-        if app.current_ws is not None:
-            await app.current_ws.close()
-
-    gap_flags: list[str] = []
-    if reconnect_count:
-        gap_flags.append("ws_reconnect")
-    if reconnect_count > reconnect_limit:
-        gap_flags.append("reconnect_limit_exceeded")
+    capture = await collect_public_runtime_capture(
+        config=config,
+        max_messages=max_messages,
+        max_runtime_seconds=max_runtime_seconds,
+        ping_interval_seconds=ping_interval_seconds,
+        reconnect_limit=reconnect_limit,
+    )
     return SmokeTransportCapture(
-        messages=messages,
-        recv_ts_start=recv_ts_start,
-        started_at=started_at,
-        ended_at=_utc_now_isoformat(),
-        ws_disconnect_count=reconnect_count,
-        reconnect_count=reconnect_count,
-        gap_flags=tuple(gap_flags),
+        messages=capture.messages,
+        recv_ts_start=capture.recv_ts_start,
+        started_at=capture.started_at,
+        ended_at=capture.ended_at,
+        ws_disconnect_count=capture.ws_disconnect_count,
+        reconnect_count=capture.reconnect_count,
+        reconnect_epoch=capture.reconnect_epoch,
+        book_epoch=capture.book_epoch,
+        gap_flags=capture.gap_flags,
     )
 
 
@@ -771,6 +732,9 @@ def _build_campaign_scope(
             skew_warning_ms=settings.smoke_skew_warning_ms,
             skew_severe_ms=settings.smoke_skew_severe_ms,
             asset_ctx_stale_threshold_ms=settings.smoke_asset_ctx_stale_threshold_ms,
+            trade_gap_threshold_ms=settings.smoke_trade_gap_threshold_ms,
+            quarantine_warning_rate=settings.smoke_quarantine_warning_rate,
+            quarantine_severe_rate=settings.smoke_quarantine_severe_rate,
         ),
     )
 
@@ -844,6 +808,9 @@ def _recompute_campaign_reports(
         skew_warning_ms=scope.thresholds.skew_warning_ms,
         skew_severe_ms=scope.thresholds.skew_severe_ms,
         asset_ctx_stale_threshold_ms=scope.thresholds.asset_ctx_stale_threshold_ms,
+        trade_gap_threshold_ms=scope.thresholds.trade_gap_threshold_ms,
+        quarantine_warning_rate=scope.thresholds.quarantine_warning_rate,
+        quarantine_severe_rate=scope.thresholds.quarantine_severe_rate,
     )
     audit_report_paths = _write_audit_reports(
         root=root,
@@ -902,6 +869,28 @@ def _render_audit_markdown(report: QualityAuditReport) -> str:
             "- asset_ctx_stale_threshold_ms: "
             f"{report.thresholds.asset_ctx_stale_threshold_ms}"
         ),
+        f"- trade_gap_threshold_ms: {report.thresholds.trade_gap_threshold_ms}",
+        (
+            "- quarantine_warning_rate: "
+            f"{report.thresholds.quarantine_warning_rate}"
+        ),
+        (
+            "- quarantine_severe_rate: "
+            f"{report.thresholds.quarantine_severe_rate}"
+        ),
+        "",
+        "## Gap Metrics",
+        f"- gap_count: {report.gap_count}",
+        f"- book_epoch_switch_count: {report.book_epoch_switch_count}",
+        f"- trade_gap_count: {report.trade_gap_count}",
+        f"- asset_ctx_gap_count: {report.asset_ctx_gap_count}",
+        f"- duplicate_trade_count: {report.duplicate_trade_count}",
+        (
+            "- non_monotonic_exchange_ts_count: "
+            f"{report.non_monotonic_exchange_ts_count}"
+        ),
+        f"- non_monotonic_recv_ts_count: {report.non_monotonic_recv_ts_count}",
+        f"- empty_snapshot_count: {report.empty_snapshot_count}",
         "",
     ]
     for table in ("book_events", "book_levels", "trades", "asset_ctx"):
@@ -909,6 +898,9 @@ def _render_audit_markdown(report: QualityAuditReport) -> str:
         lines.append(f"- row_count: {report.row_counts.get(table, 0)}")
         lines.append(
             f"- quarantine_rate: {report.quarantine_rates.get(table, 0.0):.6f}"
+        )
+        lines.append(
+            f"- quarantine_alert: {report.quarantine_alerts.get(table, 'n/a')}"
         )
         lines.append(
             f"- skew_alert: {report.skew_alerts.get(table, 'n/a')}"
@@ -950,7 +942,12 @@ def _render_campaign_markdown(result: SmokeCampaignResult) -> str:
                     f"warning={result.scope.thresholds.skew_warning_ms}, "
                     f"severe={result.scope.thresholds.skew_severe_ms}, "
                     "asset_ctx_stale="
-                    f"{result.scope.thresholds.asset_ctx_stale_threshold_ms}"
+                    f"{result.scope.thresholds.asset_ctx_stale_threshold_ms}, "
+                    "trade_gap="
+                    f"{result.scope.thresholds.trade_gap_threshold_ms}, "
+                    "quarantine="
+                    f"{result.scope.thresholds.quarantine_warning_rate}/"
+                    f"{result.scope.thresholds.quarantine_severe_rate}"
                 ),
                 "",
                 "## Sessions",
@@ -981,12 +978,6 @@ def _render_campaign_markdown(result: SmokeCampaignResult) -> str:
     for symbol, path in sorted(result.final_export_validation_report_paths.items()):
         lines.append(f"- export_validation_{symbol}: {path}")
     return "\n".join(lines).strip() + "\n"
-
-
-def _hyperliquid_ws_url(network: str) -> str:
-    if network == "testnet":
-        return "wss://api.hyperliquid-testnet.xyz/ws"
-    return "wss://api.hyperliquid.xyz/ws"
 
 
 def _campaign_session_id(*, campaign_id: str, session_index: int) -> str:
@@ -1042,6 +1033,8 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     )
     parser.add_argument("--data-root")
     parser.add_argument("--allowed-symbols")
+    parser.add_argument("--channels")
+    parser.add_argument("--candle-interval")
     parser.add_argument("--market-data-network", choices=("mainnet", "testnet"))
     parser.add_argument("--date")
     parser.add_argument("--capture-session-id")
@@ -1056,6 +1049,9 @@ def _parse_args(argv: list[str] | None) -> argparse.Namespace:
     parser.add_argument("--skew-warning-ms", type=int)
     parser.add_argument("--skew-severe-ms", type=int)
     parser.add_argument("--asset-ctx-stale-threshold-ms", type=int)
+    parser.add_argument("--trade-gap-threshold-ms", type=int)
+    parser.add_argument("--quarantine-warning-rate", type=float)
+    parser.add_argument("--quarantine-severe-rate", type=float)
     return parser.parse_args(argv)
 
 
@@ -1069,6 +1065,14 @@ def _build_settings_from_args(args: argparse.Namespace) -> Settings:
             for symbol in args.allowed_symbols.split(",")
             if symbol.strip()
         )
+    if args.channels is not None:
+        overrides["smoke_channels"] = tuple(
+            channel.strip()
+            for channel in args.channels.split(",")
+            if channel.strip()
+        )
+    if args.candle_interval is not None:
+        overrides["smoke_candle_interval"] = args.candle_interval
     if args.market_data_network is not None:
         overrides["market_data_network"] = args.market_data_network
     if args.max_runtime_seconds is not None:
@@ -1087,6 +1091,12 @@ def _build_settings_from_args(args: argparse.Namespace) -> Settings:
         overrides["smoke_asset_ctx_stale_threshold_ms"] = (
             args.asset_ctx_stale_threshold_ms
         )
+    if args.trade_gap_threshold_ms is not None:
+        overrides["smoke_trade_gap_threshold_ms"] = args.trade_gap_threshold_ms
+    if args.quarantine_warning_rate is not None:
+        overrides["smoke_quarantine_warning_rate"] = args.quarantine_warning_rate
+    if args.quarantine_severe_rate is not None:
+        overrides["smoke_quarantine_severe_rate"] = args.quarantine_severe_rate
     return Settings(**overrides)
 
 
