@@ -100,11 +100,58 @@ def test_capture_log_writer_writes_session_global_ordered_entries(tmp_path) -> N
     with zstandard.open(path, "rt", encoding="utf-8") as handle:
         rows = [json.loads(line) for line in handle]
 
-    assert path.name == "capture-log-0001.jsonl.zst"
+    assert path.name == "capture-log.jsonl.zst"
     assert rows[0]["message"]["channel"] == "trades"
     assert rows[0]["ingress"]["recv_seq"] == 0
     assert rows[1]["message"]["channel"] == "l2Book"
     assert rows[1]["message_context"]["book_event_kind"] == "snapshot"
+
+
+def test_capture_log_writer_appends_batches_into_single_session_log(tmp_path) -> None:
+    writer = CaptureLogWriter(root=tmp_path)
+    first_path = writer.write_batch(
+        trading_date=date(2026, 4, 22),
+        capture_session_id="session-1",
+        batch_id="0001",
+        messages=[{"channel": "trades", "data": [{"coin": "BTC"}]}],
+        ingress_metadata=[
+            MessageIngressMeta(
+                recv_wall_ns=1713818880100000000,
+                recv_mono_ns=100,
+                recv_seq=0,
+                connection_id="conn-0",
+            )
+        ],
+        message_contexts=[MessageCaptureContext(reconnect_epoch=0, book_epoch=1)],
+    )
+    second_path = writer.write_batch(
+        trading_date=date(2026, 4, 22),
+        capture_session_id="session-1",
+        batch_id="0002",
+        messages=[{"channel": "l2Book", "data": {"coin": "BTC"}}],
+        ingress_metadata=[
+            MessageIngressMeta(
+                recv_wall_ns=1713818880101000000,
+                recv_mono_ns=101,
+                recv_seq=1,
+                connection_id="conn-0",
+            )
+        ],
+        message_contexts=[
+            MessageCaptureContext(
+                reconnect_epoch=0,
+                book_epoch=1,
+                book_event_kind="snapshot",
+            )
+        ],
+    )
+
+    with zstandard.open(first_path, "rt", encoding="utf-8") as handle:
+        rows = [json.loads(line) for line in handle]
+
+    assert first_path == second_path
+    assert [row["message"]["channel"] for row in rows] == ["trades", "l2Book"]
+    assert [row["ingress"]["recv_seq"] for row in rows] == [0, 1]
 
 
 def test_normalized_and_quarantine_writers_create_partitioned_parquet(tmp_path) -> None:

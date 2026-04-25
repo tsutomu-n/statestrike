@@ -62,7 +62,7 @@ def test_capture_log_path_uses_session_global_partition() -> None:
 
     assert path == Path(
         "/data/capture_log/date=2026-04-22/"
-        "session=018f0dce-7b9f-7b8f-bfd6-65c9a3fe5b1b/capture-log-0001.jsonl.zst"
+        "session=018f0dce-7b9f-7b8f-bfd6-65c9a3fe5b1b/capture-log.jsonl.zst"
     )
 
 

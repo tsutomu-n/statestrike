@@ -73,7 +73,7 @@ class RawWriter:
 
 
 class CaptureLogWriter:
-    """Writes session-global ordered capture logs with ingress metadata."""
+    """Writes session-global append-only capture logs with ingress metadata."""
 
     def __init__(self, *, root: Path) -> None:
         self.root = root
@@ -95,17 +95,23 @@ class CaptureLogWriter:
             batch_id=batch_id,
         )
         path.parent.mkdir(parents=True, exist_ok=True)
-        with zstandard.open(path, "wt", encoding="utf-8") as handle:
-            for message, ingress_meta, message_context in zip(
-                messages, ingress_metadata, message_contexts, strict=True
-            ):
-                row = {
-                    "message": message,
-                    "ingress": ingress_meta.model_dump(mode="json"),
-                    "message_context": message_context.model_dump(mode="json"),
-                }
-                handle.write(json.dumps(row, ensure_ascii=True, separators=(",", ":")))
-                handle.write("\n")
+        with path.open("ab") as sink:
+            with zstandard.ZstdCompressor().stream_writer(sink) as compressed:
+                for message, ingress_meta, message_context in zip(
+                    messages, ingress_metadata, message_contexts, strict=True
+                ):
+                    row = {
+                        "message": message,
+                        "ingress": ingress_meta.model_dump(mode="json"),
+                        "message_context": message_context.model_dump(mode="json"),
+                    }
+                    encoded = json.dumps(
+                        row,
+                        ensure_ascii=True,
+                        separators=(",", ":"),
+                    ).encode("utf-8")
+                    compressed.write(encoded)
+                    compressed.write(b"\n")
         return path
 
 

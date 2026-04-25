@@ -116,7 +116,7 @@ def build_capture_log_path(
         / "capture_log"
         / f"date={trading_date.isoformat()}"
         / f"session={capture_session_id}"
-        / f"capture-log-{batch_id}.jsonl.zst"
+        / "capture-log.jsonl.zst"
     )
 
 

@@ -137,7 +137,7 @@ def _inspect_capture_logs(
     trading_date: date,
 ) -> tuple[int, int, int, int]:
     capture_root = root / "capture_log" / f"date={trading_date.isoformat()}"
-    files = sorted(capture_root.glob("session=*/capture-log-*.jsonl.zst"))
+    files = sorted(capture_root.glob("session=*/capture-log*.jsonl.zst"))
     file_count = len(files)
     row_count = 0
     missing_recv_timestamp_count = 0
