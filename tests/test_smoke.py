@@ -10,6 +10,7 @@ import duckdb
 import pytest
 
 from statestrike.collector import CollectorConfig
+from statestrike.recovery import MessageCaptureContext
 from statestrike.settings import Settings
 from statestrike.smoke import (
     SmokeTransportCapture,
@@ -87,6 +88,8 @@ def test_run_smoke_batch_persists_phase15_artifacts(tmp_path) -> None:
     assert result.audit_report_paths["md"].exists()
     assert result.export_validation_report_paths["BTC"].exists()
     assert manifest["row_count"] == 4
+    assert manifest["book_epoch_count"] == 1
+    assert manifest["book_continuity_gap_count"] == 0
     assert set(manifest["channels"]) == {
         "activeAssetCtx",
         "candle",
@@ -203,6 +206,26 @@ def test_run_smoke_session_propagates_runtime_epochs_into_normalized_rows(tmp_pa
                 load_fixture("trades.json"),
                 load_fixture("active_asset_ctx.json"),
             ],
+            message_contexts=[
+                MessageCaptureContext(
+                    reconnect_epoch=2,
+                    book_epoch=7,
+                    book_event_kind="recovery_snapshot",
+                    continuity_status="recovered",
+                    recovery_classification="recoverable",
+                    recovery_succeeded=True,
+                ),
+                MessageCaptureContext(
+                    reconnect_epoch=2,
+                    book_epoch=7,
+                    continuity_status="recovered",
+                ),
+                MessageCaptureContext(
+                    reconnect_epoch=2,
+                    book_epoch=7,
+                    continuity_status="recovered",
+                ),
+            ],
             recv_ts_start=1713818880100,
             started_at="2026-04-23T00:00:00Z",
             ended_at="2026-04-23T00:05:00Z",
@@ -234,14 +257,87 @@ def test_run_smoke_session_propagates_runtime_epochs_into_normalized_rows(tmp_pa
     book_events_path = result.normalized_paths["book_events:BTC"]
     connection = duckdb.connect()
     try:
-        reconnect_epoch, book_epoch = connection.execute(
-            f"SELECT reconnect_epoch, book_epoch FROM read_parquet('{book_events_path.as_posix()}')"
+        reconnect_epoch, book_epoch, event_kind, continuity_status = connection.execute(
+            f"SELECT reconnect_epoch, book_epoch, event_kind, continuity_status FROM read_parquet('{book_events_path.as_posix()}')"
         ).fetchone()
     finally:
         connection.close()
 
     assert reconnect_epoch == 2
     assert book_epoch == 7
+    assert event_kind == "recovery_snapshot"
+    assert continuity_status == "recovered"
+
+
+def test_run_smoke_session_persists_book_continuity_manifest_summary(tmp_path) -> None:
+    async def fake_transport(
+        *,
+        config: CollectorConfig,
+        max_messages: int,
+        max_runtime_seconds: int,
+        ping_interval_seconds: int,
+        reconnect_limit: int,
+    ) -> SmokeTransportCapture:
+        return SmokeTransportCapture(
+            messages=[
+                load_fixture("l2_book.json"),
+                load_fixture("trades.json"),
+                load_fixture("active_asset_ctx.json"),
+            ],
+            message_contexts=[
+                MessageCaptureContext(
+                    reconnect_epoch=1,
+                    book_epoch=2,
+                    book_event_kind="recovery_snapshot",
+                    continuity_status="recovered",
+                    recovery_classification="recoverable",
+                    recovery_succeeded=True,
+                ),
+                MessageCaptureContext(
+                    reconnect_epoch=1,
+                    book_epoch=2,
+                    continuity_status="recovery_pending",
+                ),
+                MessageCaptureContext(
+                    reconnect_epoch=1,
+                    book_epoch=2,
+                    continuity_status="recovery_pending",
+                ),
+            ],
+            recv_ts_start=1713818880100,
+            started_at="2026-04-23T00:00:00Z",
+            ended_at="2026-04-23T00:05:00Z",
+            ws_disconnect_count=1,
+            reconnect_count=1,
+            reconnect_epoch=1,
+            book_epoch=2,
+            gap_flags=("l2_book_non_recoverable:ETH",),
+        )
+
+    settings = Settings(
+        data_root=tmp_path,
+        allowed_symbols=("BTC", "ETH"),
+        smoke_max_messages=4,
+        smoke_max_runtime_seconds=300,
+        smoke_ping_interval_seconds=15,
+        smoke_reconnect_limit=2,
+    )
+
+    result = asyncio.run(
+        run_smoke_session(
+            settings=settings,
+            trading_date=date(2026, 4, 23),
+            transport=fake_transport,
+            capture_session_id="session-gap-summary",
+        )
+    )
+
+    manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+
+    assert manifest["book_epoch_count"] == 2
+    assert manifest["recoverable_book_gap_count"] == 1
+    assert manifest["non_recoverable_book_gap_count"] == 1
+    assert manifest["book_continuity_gap_count"] == 2
 
 
 def test_run_smoke_campaign_accumulates_daily_artifacts_across_sessions(

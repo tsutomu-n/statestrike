@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from datetime import date
 from pathlib import Path
 
@@ -27,6 +28,9 @@ class QualityAuditReport(BaseModel):
     zero_or_negative_qty_count: int = Field(ge=0)
     asset_ctx_stale_count: int = Field(ge=0)
     duplicate_trade_count: int = Field(ge=0)
+    book_continuity_gap_count: int = Field(ge=0)
+    recoverable_book_gap_count: int = Field(ge=0)
+    non_recoverable_book_gap_count: int = Field(ge=0)
     book_epoch_switch_count: int = Field(ge=0)
     non_monotonic_exchange_ts_count: int = Field(ge=0)
     non_monotonic_recv_ts_count: int = Field(ge=0)
@@ -198,6 +202,15 @@ def run_quality_audit(
                 symbols=symbols,
             ),
         )
+        recoverable_book_gap_count = _count_recoverable_book_gaps(
+            connection=connection,
+            files=_table_files(
+                normalized_root=normalized_root,
+                table="book_events",
+                trading_date=trading_date,
+                symbols=symbols,
+            ),
+        )
         book_epoch_switch_count = _count_book_epoch_switches(
             connection=connection,
             files=_table_files(
@@ -265,6 +278,17 @@ def run_quality_audit(
     finally:
         connection.close()
 
+    non_recoverable_book_gap_count = _count_non_recoverable_book_gaps_from_manifests(
+        manifest_files=_manifest_files(
+            root=normalized_root,
+            trading_date=trading_date,
+        ),
+        symbols=symbols,
+    )
+    book_continuity_gap_count = (
+        recoverable_book_gap_count + non_recoverable_book_gap_count
+    )
+
     return QualityAuditReport(
         thresholds=QualityAuditThresholds(
             skew_warning_ms=skew_warning_ms,
@@ -279,7 +303,7 @@ def run_quality_audit(
         quarantine_reason_counts=quarantine_reason_counts,
         quarantine_rates=quarantine_rates,
         quarantine_alerts=quarantine_alerts,
-        gap_count=book_epoch_switch_count + trade_gap_count + asset_ctx_gap_count,
+        gap_count=book_continuity_gap_count + trade_gap_count + asset_ctx_gap_count,
         skew_summary=skew_summary,
         symbol_skew_summary=symbol_skew_summary,
         skew_alerts=skew_alerts,
@@ -287,6 +311,9 @@ def run_quality_audit(
         zero_or_negative_qty_count=non_positive_size_count,
         asset_ctx_stale_count=asset_ctx_stale_count,
         duplicate_trade_count=duplicate_trade_count,
+        book_continuity_gap_count=book_continuity_gap_count,
+        recoverable_book_gap_count=recoverable_book_gap_count,
+        non_recoverable_book_gap_count=non_recoverable_book_gap_count,
         book_epoch_switch_count=book_epoch_switch_count,
         non_monotonic_exchange_ts_count=non_monotonic_exchange_ts_count,
         non_monotonic_recv_ts_count=non_monotonic_recv_ts_count,
@@ -334,6 +361,13 @@ def _quarantine_files(
         )
         files.extend(sorted(partition_root.glob("*.parquet")))
     return files
+
+
+def _manifest_files(*, root: Path, trading_date: date) -> list[Path]:
+    manifest_root = root / "manifests" / f"date={trading_date.isoformat()}"
+    if not manifest_root.exists():
+        return []
+    return sorted(manifest_root.glob("session=*/*.json"))
 
 
 def _count_rows(*, connection: duckdb.DuckDBPyConnection, files: list[Path]) -> int:
@@ -519,6 +553,37 @@ def _count_duplicate_trades(
     )
 
 
+def _count_recoverable_book_gaps(
+    *,
+    connection: duckdb.DuckDBPyConnection,
+    files: list[Path],
+) -> int:
+    if not files:
+        return 0
+    source = _parquet_source(files)
+    columns = set(connection.execute(f"SELECT * FROM {source} LIMIT 0").fetchdf().columns)
+    if "recovery_classification" not in columns:
+        return int(
+            connection.execute(
+                f"""
+                SELECT COUNT(*)
+                FROM {source}
+                WHERE event_kind = 'recovery_snapshot'
+                """
+            ).fetchone()[0]
+        )
+    return int(
+        connection.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM {source}
+            WHERE event_kind = 'recovery_snapshot'
+              AND recovery_classification = 'recoverable'
+            """
+        ).fetchone()[0]
+    )
+
+
 def _count_book_epoch_switches(
     *,
     connection: duckdb.DuckDBPyConnection,
@@ -539,6 +604,26 @@ def _count_book_epoch_switches(
             """
         ).fetchone()[0]
     )
+
+
+def _count_non_recoverable_book_gaps_from_manifests(
+    *,
+    manifest_files: list[Path],
+    symbols: tuple[str, ...],
+) -> int:
+    allowed_symbols = set(symbols)
+    count = 0
+    for path in manifest_files:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        for gap_flag in payload.get("gap_flags", []):
+            if not isinstance(gap_flag, str):
+                continue
+            if not gap_flag.startswith("l2_book_non_recoverable:"):
+                continue
+            _, _, symbol = gap_flag.partition(":")
+            if not allowed_symbols or symbol in allowed_symbols:
+                count += 1
+    return count
 
 
 def _count_trade_gaps(

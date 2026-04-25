@@ -29,6 +29,13 @@ from statestrike.paths import (
     build_smoke_campaign_report_path,
 )
 from statestrike.quality import QualityAuditReport, QualityAuditThresholds, run_quality_audit
+from statestrike.recovery import (
+    MessageCaptureContext,
+    count_non_recoverable_book_gaps,
+    count_recoverable_book_gaps,
+    max_book_epoch,
+    resolve_message_contexts,
+)
 from statestrike.runtime import collect_public_runtime_capture
 from statestrike.schemas import validate_records
 from statestrike.settings import Settings
@@ -55,6 +62,7 @@ class SmokeTransportCapture(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     messages: list[dict[str, Any]]
+    message_contexts: tuple[MessageCaptureContext, ...] = ()
     recv_ts_start: int
     started_at: str
     ended_at: str
@@ -136,6 +144,7 @@ def run_smoke_batch(
     root: Path,
     trading_date: date,
     messages: list[dict[str, Any]],
+    message_contexts: list[MessageCaptureContext] | tuple[MessageCaptureContext, ...] | None = None,
     config: CollectorConfig,
     batch_id: str = "0001",
     capture_session_id: str | None = None,
@@ -166,6 +175,12 @@ def run_smoke_batch(
     audit_report_paths: dict[str, Path] = {}
     export_validation_report_paths: dict[str, Path] = {}
     export_validations: dict[str, ExportValidationReport] = {}
+    resolved_contexts = resolve_message_contexts(
+        messages=messages,
+        message_contexts=message_contexts,
+        reconnect_epoch=reconnect_epoch,
+        book_epoch=book_epoch,
+    )
 
     grouped_messages = _group_messages_by_channel_and_symbol(
         messages=messages,
@@ -181,16 +196,20 @@ def run_smoke_batch(
             messages=grouped,
         )
 
-    symbols = tuple(sorted({symbol for _, symbol in grouped_messages}))
+    observed_symbols = tuple(sorted({symbol for _, symbol in grouped_messages}))
+    audit_symbols = config.allowed_symbols or observed_symbols
     recv_ts = recv_ts_start
-    for symbol in symbols:
-        symbol_messages = [
-            message
-            for message in messages
+    for symbol in observed_symbols:
+        symbol_payloads = [
+            (message, context)
+            for message, context in zip(messages, resolved_contexts, strict=True)
             if _extract_symbol(message) == symbol
         ]
+        symbol_messages = [message for message, _ in symbol_payloads]
+        symbol_contexts = [context for _, context in symbol_payloads]
         batch = collect_market_batch(
             messages=symbol_messages,
+            message_contexts=symbol_contexts,
             config=config,
             capture_session_id=capture_session_id,
             reconnect_epoch=reconnect_epoch,
@@ -242,7 +261,7 @@ def run_smoke_batch(
         normalized_root=root,
         quarantine_root=root,
         trading_date=trading_date,
-        symbols=symbols,
+        symbols=audit_symbols,
         skew_warning_ms=skew_warning_ms,
         skew_severe_ms=skew_severe_ms,
         asset_ctx_stale_threshold_ms=asset_ctx_stale_threshold_ms,
@@ -260,12 +279,22 @@ def run_smoke_batch(
         started_at=started_at,
         ended_at=ended_at or _utc_now_isoformat(),
         channels=tuple(sorted({message["channel"] for message in messages})),
-        symbols=symbols,
+        symbols=audit_symbols,
         row_count=len(messages),
         ws_disconnect_count=ws_disconnect_count,
         reconnect_count=(
             reconnect_epoch if manifest_reconnect_count is None else manifest_reconnect_count
         ),
+        book_epoch_count=max_book_epoch(
+            resolved_contexts,
+            fallback=max(1, book_epoch),
+        ),
+        book_continuity_gap_count=(
+            count_recoverable_book_gaps(resolved_contexts)
+            + count_non_recoverable_book_gaps(gap_flags)
+        ),
+        recoverable_book_gap_count=count_recoverable_book_gaps(resolved_contexts),
+        non_recoverable_book_gap_count=count_non_recoverable_book_gaps(gap_flags),
         gap_flags=gap_flags,
     )
     manifest_path = raw_writer.write_manifest(
@@ -472,6 +501,7 @@ async def _run_single_smoke_capture(
         root=settings.data_root,
         trading_date=trading_date or date.today(),
         messages=capture.messages,
+        message_contexts=capture.message_contexts,
         config=config,
         batch_id=batch_id,
         capture_session_id=capture_session_id,
@@ -514,6 +544,7 @@ async def collect_public_smoke_messages(
     )
     return SmokeTransportCapture(
         messages=capture.messages,
+        message_contexts=capture.message_contexts,
         recv_ts_start=capture.recv_ts_start,
         started_at=capture.started_at,
         ended_at=capture.ended_at,
@@ -881,6 +912,9 @@ def _render_audit_markdown(report: QualityAuditReport) -> str:
         "",
         "## Gap Metrics",
         f"- gap_count: {report.gap_count}",
+        f"- book_continuity_gap_count: {report.book_continuity_gap_count}",
+        f"- recoverable_book_gap_count: {report.recoverable_book_gap_count}",
+        f"- non_recoverable_book_gap_count: {report.non_recoverable_book_gap_count}",
         f"- book_epoch_switch_count: {report.book_epoch_switch_count}",
         f"- trade_gap_count: {report.trade_gap_count}",
         f"- asset_ctx_gap_count: {report.asset_ctx_gap_count}",

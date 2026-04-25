@@ -18,6 +18,18 @@ BOOK_EVENTS_SCHEMA = pa.DataFrameSchema(
         "exchange_ts": pa.Column(int, pa.Check.ge(0)),
         "recv_ts": pa.Column(int, pa.Check.ge(0)),
         "event_kind": pa.Column(str, pa.Check.isin(["snapshot", "delta", "recovery_snapshot"])),
+        "continuity_status": pa.Column(
+            str,
+            pa.Check.isin(
+                ["continuous", "recovery_pending", "recovered", "non_recoverable"]
+            ),
+        ),
+        "recovery_classification": pa.Column(
+            object,
+            pa.Check.isin(["recoverable", "non_recoverable"]),
+            nullable=True,
+        ),
+        "recovery_succeeded": pa.Column(object, nullable=True),
         "source": pa.Column(str, pa.Check.isin(["ws", "info", "s3", "tardis"])),
         "raw_msg_hash": pa.Column(str),
         "dedup_hash": pa.Column(str),

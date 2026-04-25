@@ -10,6 +10,7 @@ from statestrike.collector import (
     build_subscription_requests,
     collect_market_batch,
 )
+from statestrike.recovery import MessageCaptureContext
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "hyperliquid"
@@ -125,6 +126,57 @@ def test_collect_market_batch_keeps_candle_out_of_canonical_tables() -> None:
         "trades": 2,
         "asset_ctx": 1,
     }
+
+
+def test_collect_market_batch_applies_message_recovery_contexts() -> None:
+    config = CollectorConfig(
+        allowed_symbols=("BTC",),
+        source_priority=("ws", "info", "s3", "tardis"),
+        market_data_network="mainnet",
+        flush_interval_ms=1000,
+        snapshot_recovery_enabled=True,
+        channels=("l2Book",),
+        candle_interval=None,
+    )
+    initial = load_fixture("l2_book.json")
+    recovered = load_fixture("l2_book.json")
+    recovered["data"]["time"] = recovered["data"]["time"] + 100
+
+    result = collect_market_batch(
+        messages=[initial, recovered],
+        message_contexts=[
+            MessageCaptureContext(
+                reconnect_epoch=0,
+                book_epoch=1,
+                book_event_kind="snapshot",
+                continuity_status="continuous",
+            ),
+            MessageCaptureContext(
+                reconnect_epoch=1,
+                book_epoch=2,
+                book_event_kind="recovery_snapshot",
+                continuity_status="recovered",
+                recovery_classification="recoverable",
+                recovery_succeeded=True,
+            ),
+        ],
+        config=config,
+        capture_session_id="session-ctx",
+        reconnect_epoch=0,
+        book_epoch=1,
+        recv_ts_start=1713818880100,
+    )
+
+    assert [row["event_kind"] for row in result.normalized_rows["book_events"]] == [
+        "snapshot",
+        "recovery_snapshot",
+    ]
+    assert result.normalized_rows["book_events"][1]["book_epoch"] == 2
+    assert result.normalized_rows["book_events"][1]["continuity_status"] == "recovered"
+    assert (
+        result.normalized_rows["book_events"][1]["recovery_classification"]
+        == "recoverable"
+    )
 
 
 def test_collector_config_validates_runtime_backoff_bounds() -> None:

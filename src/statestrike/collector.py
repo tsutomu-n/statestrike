@@ -10,6 +10,7 @@ from statestrike.normalize import (
     normalize_l2_book,
     normalize_trades,
 )
+from statestrike.recovery import MessageCaptureContext, resolve_message_contexts
 
 CollectorChannel = Literal["l2Book", "trades", "activeAssetCtx", "candle"]
 CandleInterval = Literal[
@@ -109,6 +110,7 @@ def build_subscription_requests(config: CollectorConfig) -> list[dict[str, Any]]
 def collect_market_batch(
     *,
     messages: list[dict[str, Any]],
+    message_contexts: list[MessageCaptureContext] | tuple[MessageCaptureContext, ...] | None = None,
     config: CollectorConfig,
     capture_session_id: str,
     reconnect_epoch: int,
@@ -116,6 +118,12 @@ def collect_market_batch(
     recv_ts_start: int,
 ) -> CollectorBatchResult:
     store = pybotters.HyperliquidDataStore()
+    resolved_contexts = resolve_message_contexts(
+        messages=messages,
+        message_contexts=message_contexts,
+        reconnect_epoch=reconnect_epoch,
+        book_epoch=book_epoch,
+    )
     normalized_rows: dict[str, list[dict[str, Any]]] = {
         "book_events": [],
         "book_levels": [],
@@ -123,7 +131,7 @@ def collect_market_batch(
         "asset_ctx": [],
     }
     recv_ts = recv_ts_start
-    for message in messages:
+    for message, message_context in zip(messages, resolved_contexts, strict=True):
         store.onmessage(message, None)
         channel = message["channel"]
         if channel not in config.channels:
@@ -137,10 +145,14 @@ def collect_market_batch(
             book_event, book_levels = normalize_l2_book(
                 message=message,
                 capture_session_id=capture_session_id,
-                reconnect_epoch=reconnect_epoch,
-                book_epoch=book_epoch,
+                reconnect_epoch=message_context.reconnect_epoch,
+                book_epoch=message_context.book_epoch,
                 recv_ts=recv_ts,
                 source="ws",
+                event_kind=message_context.book_event_kind,
+                continuity_status=message_context.continuity_status,
+                recovery_classification=message_context.recovery_classification,
+                recovery_succeeded=message_context.recovery_succeeded,
             )
             normalized_rows["book_events"].append(book_event)
             normalized_rows["book_levels"].extend(book_levels)
@@ -149,7 +161,7 @@ def collect_market_batch(
                 normalize_trades(
                     message=message,
                     capture_session_id=capture_session_id,
-                    reconnect_epoch=reconnect_epoch,
+                    reconnect_epoch=message_context.reconnect_epoch,
                     recv_ts=recv_ts,
                     source="ws",
                 )
@@ -159,7 +171,7 @@ def collect_market_batch(
                 normalize_active_asset_ctx(
                     message=message,
                     capture_session_id=capture_session_id,
-                    reconnect_epoch=reconnect_epoch,
+                    reconnect_epoch=message_context.reconnect_epoch,
                     recv_ts=recv_ts,
                     source="ws",
                 )

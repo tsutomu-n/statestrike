@@ -5,6 +5,7 @@ import asyncio
 import pytest
 
 from statestrike.collector import CollectorConfig
+from statestrike.recovery import MessageCaptureContext
 from statestrike.runtime import RuntimeCapture, collect_public_runtime_capture
 
 
@@ -106,3 +107,50 @@ def test_collect_public_runtime_capture_raises_after_reconnect_limit() -> None:
 
     assert calls == 2
     assert len(sleep_delays) == 1
+
+
+def test_collect_public_runtime_capture_preserves_recovery_message_contexts() -> None:
+    async def fake_transport(
+        *,
+        config: CollectorConfig,
+        max_messages: int,
+        max_runtime_seconds: int,
+        ping_interval_seconds: int,
+        reconnect_limit: int,
+    ) -> RuntimeCapture:
+        return RuntimeCapture(
+            messages=[{"channel": "l2Book", "data": {"coin": "BTC"}}],
+            message_contexts=[
+                MessageCaptureContext(
+                    reconnect_epoch=1,
+                    book_epoch=2,
+                    book_event_kind="recovery_snapshot",
+                    continuity_status="recovered",
+                    recovery_classification="recoverable",
+                    recovery_succeeded=True,
+                )
+            ],
+            recv_ts_start=1713818880100,
+            started_at="2026-04-24T00:00:00Z",
+            ended_at="2026-04-24T00:00:01Z",
+            reconnect_count=1,
+            reconnect_epoch=1,
+            book_epoch=2,
+            gap_flags=("ws_reconnect",),
+        )
+
+    result = asyncio.run(
+        collect_public_runtime_capture(
+            config=runtime_config(),
+            max_messages=1,
+            max_runtime_seconds=30,
+            ping_interval_seconds=5,
+            reconnect_limit=2,
+            transport=fake_transport,
+            monotonic_fn=lambda: 0.0,
+        )
+    )
+
+    assert result.book_epoch == 2
+    assert result.message_contexts[0].book_event_kind == "recovery_snapshot"
+    assert result.message_contexts[0].continuity_status == "recovered"

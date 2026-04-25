@@ -19,8 +19,14 @@ class BookEvent(FrozenModel):
     exchange_ts: int = Field(ge=0)
     recv_ts: int = Field(ge=0)
     event_kind: Literal["snapshot", "delta", "recovery_snapshot"]
+    continuity_status: Literal[
+        "continuous", "recovery_pending", "recovered", "non_recoverable"
+    ] = "continuous"
+    recovery_classification: Literal["recoverable", "non_recoverable"] | None = None
+    recovery_succeeded: bool | None = None
     source: Literal["ws", "info", "s3", "tardis"]
     raw_msg_hash: str
+    dedup_hash: str = ""
     n_bids: int = Field(ge=0)
     n_asks: int = Field(ge=0)
 
@@ -98,4 +104,8 @@ class ManifestRecord(FrozenModel):
     row_count: int = Field(ge=0)
     ws_disconnect_count: int = Field(ge=0)
     reconnect_count: int = Field(ge=0)
+    book_epoch_count: int = Field(default=1, ge=1)
+    book_continuity_gap_count: int = Field(default=0, ge=0)
+    recoverable_book_gap_count: int = Field(default=0, ge=0)
+    non_recoverable_book_gap_count: int = Field(default=0, ge=0)
     gap_flags: tuple[str, ...]

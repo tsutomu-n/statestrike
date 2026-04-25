@@ -10,6 +10,7 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from statestrike.collector import CollectorConfig, build_subscription_requests
 from statestrike.reconnect import ReconnectBackoffPolicy
+from statestrike.recovery import BookRecoveryTracker, MessageCaptureContext
 
 RuntimeSleep = Callable[[float], Awaitable[None]]
 RuntimeTransport = Callable[..., Awaitable["RuntimeCapture"]]
@@ -19,6 +20,7 @@ class RuntimeCapture(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     messages: list[dict[str, Any]]
+    message_contexts: tuple[MessageCaptureContext, ...] = ()
     recv_ts_start: int
     started_at: str
     ended_at: str
@@ -73,6 +75,7 @@ async def collect_public_runtime_capture(
             )
             return RuntimeCapture(
                 messages=attempt_capture.messages,
+                message_contexts=attempt_capture.message_contexts,
                 recv_ts_start=recv_ts_start,
                 started_at=started_at,
                 ended_at=attempt_capture.ended_at,
@@ -101,31 +104,42 @@ async def collect_public_messages_once(
     reconnect_limit: int,
 ) -> RuntimeCapture:
     requests = build_subscription_requests(config)
-    queue: asyncio.Queue[dict[str, Any]] = asyncio.Queue()
+    queue: asyncio.Queue[tuple[dict[str, Any], MessageCaptureContext]] = asyncio.Queue()
     stop_event = asyncio.Event()
     expected_acks = max(1, len(requests))
     subscription_response_count = 0
     reconnect_count = 0
+    recovery_tracker = BookRecoveryTracker(
+        symbols=(
+            config.allowed_symbols
+            if "l2Book" in config.channels and config.book_snapshot_refresh_on_reconnect
+            else ()
+        )
+    )
 
     def on_message(message: dict[str, Any], _ws: Any) -> None:
         nonlocal reconnect_count, subscription_response_count
         channel = message.get("channel")
         if channel == "subscriptionResponse":
             subscription_response_count += 1
-            reconnect_count = max(0, (subscription_response_count // expected_acks) - 1)
+            next_reconnect_count = max(0, (subscription_response_count // expected_acks) - 1)
+            while reconnect_count < next_reconnect_count:
+                reconnect_count += 1
+                recovery_tracker.mark_reconnect()
             if reconnect_count > reconnect_limit:
                 stop_event.set()
             return
         if channel == "pong":
             return
         if channel in config.channels:
-            queue.put_nowait(message)
+            queue.put_nowait((message, recovery_tracker.classify_message(message)))
             if queue.qsize() >= max_messages:
                 stop_event.set()
 
     started_at = _utc_now_isoformat()
     recv_ts_start = int(time.time_ns() // 1_000_000)
     messages: list[dict[str, Any]] = []
+    message_contexts: list[MessageCaptureContext] = []
 
     async with pybotters.Client() as client:
         app = client.ws_connect(
@@ -145,7 +159,7 @@ async def collect_public_messages_once(
             if timeout <= 0:
                 break
             try:
-                message = await asyncio.wait_for(queue.get(), timeout=timeout)
+                message, message_context = await asyncio.wait_for(queue.get(), timeout=timeout)
             except asyncio.TimeoutError:
                 current_ws = app.current_ws
                 if current_ws is not None:
@@ -155,6 +169,7 @@ async def collect_public_messages_once(
                         pass
                 continue
             messages.append(message)
+            message_contexts.append(message_context)
         if app.current_ws is not None:
             await app.current_ws.close()
 
@@ -163,18 +178,23 @@ async def collect_public_messages_once(
         gap_flags.append("ws_reconnect")
     if reconnect_count > reconnect_limit:
         gap_flags.append("reconnect_limit_exceeded")
+    gap_flags.extend(recovery_tracker.finalize_gap_flags())
     return RuntimeCapture(
         messages=messages,
+        message_contexts=tuple(message_contexts),
         recv_ts_start=recv_ts_start,
         started_at=started_at,
         ended_at=_utc_now_isoformat(),
         ws_disconnect_count=reconnect_count,
         reconnect_count=reconnect_count,
         reconnect_epoch=reconnect_count,
-        book_epoch=(
-            reconnect_count + 1
-            if config.book_snapshot_refresh_on_reconnect and reconnect_count > 0
-            else 1
+        book_epoch=max(
+            [context.book_epoch for context in message_contexts],
+            default=(
+                reconnect_count + 1
+                if config.book_snapshot_refresh_on_reconnect and reconnect_count > 0
+                else 1
+            ),
         ),
         gap_flags=tuple(gap_flags),
     )

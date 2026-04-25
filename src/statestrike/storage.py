@@ -147,6 +147,6 @@ def _write_parquet_frame(*, path: Path, frame: pd.DataFrame) -> None:
 def _parquet_source(files: list[Path]) -> str:
     escaped = [path.as_posix().replace("'", "''") for path in files]
     if len(escaped) == 1:
-        return f"read_parquet('{escaped[0]}')"
+        return f"read_parquet('{escaped[0]}', union_by_name=True)"
     joined = ", ".join(f"'{path}'" for path in escaped)
-    return f"read_parquet([{joined}])"
+    return f"read_parquet([{joined}], union_by_name=True)"

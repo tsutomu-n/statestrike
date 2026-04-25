@@ -14,6 +14,10 @@ def normalize_l2_book(
     book_epoch: int,
     recv_ts: int,
     source: str,
+    event_kind: str | None = None,
+    continuity_status: str = "continuous",
+    recovery_classification: str | None = None,
+    recovery_succeeded: bool | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     raw_msg_hash = canonical_hash(message)
     data = message["data"]
@@ -35,9 +39,11 @@ def normalize_l2_book(
         "symbol": coin,
         "exchange_ts": int(data["time"]),
         "recv_ts": recv_ts,
-        "event_kind": (
-            "recovery_snapshot" if reconnect_epoch > 0 or book_epoch > 1 else "snapshot"
-        ),
+        "event_kind": event_kind
+        or ("recovery_snapshot" if reconnect_epoch > 0 or book_epoch > 1 else "snapshot"),
+        "continuity_status": continuity_status,
+        "recovery_classification": recovery_classification,
+        "recovery_succeeded": recovery_succeeded,
         "source": source,
         "raw_msg_hash": raw_msg_hash,
         "dedup_hash": book_event_id,

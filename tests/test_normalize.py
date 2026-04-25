@@ -31,6 +31,9 @@ def test_normalize_l2_book_fixture_into_event_and_levels() -> None:
 
     assert book_event["symbol"] == "BTC"
     assert book_event["event_kind"] == "snapshot"
+    assert book_event["continuity_status"] == "continuous"
+    assert book_event["recovery_classification"] is None
+    assert book_event["recovery_succeeded"] is None
     assert book_event["n_bids"] == 2
     assert book_event["n_asks"] == 2
     assert len(book_levels) == 4
@@ -47,9 +50,16 @@ def test_normalize_l2_book_marks_recovery_snapshot_after_reconnect() -> None:
         book_epoch=3,
         recv_ts=1713818880100,
         source="ws",
+        event_kind="recovery_snapshot",
+        continuity_status="recovered",
+        recovery_classification="recoverable",
+        recovery_succeeded=True,
     )
 
     assert book_event["event_kind"] == "recovery_snapshot"
+    assert book_event["continuity_status"] == "recovered"
+    assert book_event["recovery_classification"] == "recoverable"
+    assert book_event["recovery_succeeded"] is True
     assert book_event["dedup_hash"] == book_event["book_event_id"]
     assert book_levels[0]["capture_session_id"] == "session-1"
     assert book_levels[0]["reconnect_epoch"] == 2

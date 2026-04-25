@@ -6,10 +6,11 @@ from pathlib import Path
 
 import pytest
 
+from statestrike.models import ManifestRecord
 from statestrike.collector import CollectorConfig, collect_market_batch
 from statestrike.quality import run_quality_audit
 from statestrike.schemas import validate_records
-from statestrike.storage import NormalizedWriter, QuarantineWriter
+from statestrike.storage import NormalizedWriter, QuarantineWriter, RawWriter
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "hyperliquid"
@@ -75,7 +76,7 @@ def test_quality_audit_summarizes_normalized_tables(tmp_path) -> None:
         normalized_root=tmp_path,
         quarantine_root=tmp_path,
         trading_date=trading_date,
-        symbols=("BTC",),
+        symbols=("BTC", "ETH"),
         skew_warning_ms=45,
         skew_severe_ms=90,
         asset_ctx_stale_threshold_ms=123456,
@@ -99,6 +100,7 @@ def test_quality_audit_summarizes_normalized_tables(tmp_path) -> None:
 
 def test_quality_audit_counts_gap_and_duplicate_metrics(tmp_path) -> None:
     normalized = NormalizedWriter(root=tmp_path)
+    raw = RawWriter(root=tmp_path)
     trading_date = date(2026, 4, 22)
 
     normalized.write_rows(
@@ -115,6 +117,9 @@ def test_quality_audit_counts_gap_and_duplicate_metrics(tmp_path) -> None:
                 "exchange_ts": 1000,
                 "recv_ts": 1010,
                 "event_kind": "snapshot",
+                "continuity_status": "continuous",
+                "recovery_classification": None,
+                "recovery_succeeded": None,
                 "source": "ws",
                 "raw_msg_hash": "raw-1",
                 "dedup_hash": "be-1",
@@ -130,6 +135,9 @@ def test_quality_audit_counts_gap_and_duplicate_metrics(tmp_path) -> None:
                 "exchange_ts": 900,
                 "recv_ts": 1020,
                 "event_kind": "recovery_snapshot",
+                "continuity_status": "recovered",
+                "recovery_classification": "recoverable",
+                "recovery_succeeded": True,
                 "source": "ws",
                 "raw_msg_hash": "raw-2",
                 "dedup_hash": "be-2",
@@ -137,6 +145,20 @@ def test_quality_audit_counts_gap_and_duplicate_metrics(tmp_path) -> None:
                 "n_asks": 1,
             },
         ],
+    )
+    raw.write_manifest(
+        trading_date=trading_date,
+        manifest=ManifestRecord(
+            capture_session_id="session-1",
+            started_at="2026-04-22T00:00:00Z",
+            ended_at="2026-04-22T00:10:00Z",
+            channels=("l2Book", "trades", "activeAssetCtx"),
+            symbols=("BTC", "ETH"),
+            row_count=7,
+            ws_disconnect_count=1,
+            reconnect_count=1,
+            gap_flags=("l2_book_non_recoverable:ETH",),
+        ),
     )
     normalized.write_rows(
         table="book_levels",
@@ -274,7 +296,7 @@ def test_quality_audit_counts_gap_and_duplicate_metrics(tmp_path) -> None:
         normalized_root=tmp_path,
         quarantine_root=tmp_path,
         trading_date=trading_date,
-        symbols=("BTC",),
+        symbols=("BTC", "ETH"),
         skew_warning_ms=45,
         skew_severe_ms=90,
         asset_ctx_stale_threshold_ms=123456,
@@ -282,6 +304,9 @@ def test_quality_audit_counts_gap_and_duplicate_metrics(tmp_path) -> None:
 
     assert report.gap_count >= 2
     assert report.book_epoch_switch_count == 1
+    assert report.recoverable_book_gap_count == 1
+    assert report.non_recoverable_book_gap_count == 1
+    assert report.book_continuity_gap_count == 2
     assert report.duplicate_trade_count == 1
     assert report.non_monotonic_exchange_ts_count >= 1
     assert report.non_monotonic_recv_ts_count >= 1
