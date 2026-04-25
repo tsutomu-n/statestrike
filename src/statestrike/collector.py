@@ -10,7 +10,12 @@ from statestrike.normalize import (
     normalize_l2_book,
     normalize_trades,
 )
-from statestrike.recovery import MessageCaptureContext, resolve_message_contexts
+from statestrike.recovery import (
+    MessageCaptureContext,
+    MessageIngressMeta,
+    resolve_ingress_metadata,
+    resolve_message_contexts,
+)
 
 CollectorChannel = Literal["l2Book", "trades", "activeAssetCtx", "candle"]
 CandleInterval = Literal[
@@ -111,6 +116,7 @@ def collect_market_batch(
     *,
     messages: list[dict[str, Any]],
     message_contexts: list[MessageCaptureContext] | tuple[MessageCaptureContext, ...] | None = None,
+    ingress_metadata: list[MessageIngressMeta] | tuple[MessageIngressMeta, ...] | None = None,
     config: CollectorConfig,
     capture_session_id: str,
     reconnect_epoch: int,
@@ -124,22 +130,27 @@ def collect_market_batch(
         reconnect_epoch=reconnect_epoch,
         book_epoch=book_epoch,
     )
+    resolved_ingress = resolve_ingress_metadata(
+        messages=messages,
+        ingress_metadata=ingress_metadata,
+        recv_ts_start=recv_ts_start,
+    )
     normalized_rows: dict[str, list[dict[str, Any]]] = {
         "book_events": [],
         "book_levels": [],
         "trades": [],
         "asset_ctx": [],
     }
-    recv_ts = recv_ts_start
-    for message, message_context in zip(messages, resolved_contexts, strict=True):
+    for message, message_context, ingress_meta in zip(
+        messages, resolved_contexts, resolved_ingress, strict=True
+    ):
         store.onmessage(message, None)
         channel = message["channel"]
+        recv_ts = ingress_meta.recv_wall_ns // 1_000_000
         if channel not in config.channels:
-            recv_ts += 1
             continue
         symbol = _extract_symbol(message)
         if config.allowed_symbols and symbol not in config.allowed_symbols:
-            recv_ts += 1
             continue
         if channel == "l2Book":
             book_event, book_levels = normalize_l2_book(
@@ -176,7 +187,6 @@ def collect_market_batch(
                     source="ws",
                 )
             )
-        recv_ts += 1
     return CollectorBatchResult(
         raw_count=len(messages),
         normalized_counts={

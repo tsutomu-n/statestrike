@@ -26,6 +26,15 @@ class MessageCaptureContext(BaseModel):
     recovery_succeeded: bool | None = None
 
 
+class MessageIngressMeta(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    recv_wall_ns: int = Field(ge=0)
+    recv_mono_ns: int = Field(ge=0)
+    recv_seq: int = Field(ge=0)
+    connection_id: str
+
+
 class BookRecoveryTracker:
     def __init__(self, *, symbols: tuple[str, ...]) -> None:
         self._symbols = tuple(sorted(dict.fromkeys(symbol.upper() for symbol in symbols)))
@@ -124,6 +133,27 @@ def resolve_message_contexts(
     if len(message_contexts) != len(messages):
         raise ValueError("message_contexts length must match messages length")
     return list(message_contexts)
+
+
+def resolve_ingress_metadata(
+    *,
+    messages: list[dict[str, Any]],
+    ingress_metadata: list[MessageIngressMeta] | tuple[MessageIngressMeta, ...] | None,
+    recv_ts_start: int,
+) -> list[MessageIngressMeta]:
+    if ingress_metadata:
+        if len(ingress_metadata) != len(messages):
+            raise ValueError("ingress_metadata length must match messages length")
+        return list(ingress_metadata)
+    return [
+        MessageIngressMeta(
+            recv_wall_ns=(recv_ts_start + index) * 1_000_000,
+            recv_mono_ns=index,
+            recv_seq=index,
+            connection_id="fixture-fallback",
+        )
+        for index, _ in enumerate(messages)
+    ]
 
 
 def count_recoverable_book_gaps(

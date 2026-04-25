@@ -96,6 +96,7 @@ def normalize_trades(
     for trade in message["data"]:
         symbol = str(trade["coin"]).upper()
         native_trade_id = trade.get("tid")
+        native_tid = str(native_trade_id) if native_trade_id is not None else None
         dedup_hash = canonical_hash(
             {
                 "symbol": symbol,
@@ -106,9 +107,20 @@ def normalize_trades(
                 "tid": native_trade_id,
             }
         )
+        trade_event_id = canonical_hash(
+            {
+                "symbol": symbol,
+                "exchange_ts": int(trade["time"]),
+                "native_tid": native_tid,
+                "price": str(trade["px"]),
+                "size": str(trade["sz"]),
+                "side": trade["side"],
+            }
+        )
         rows.append(
             {
-                "trade_event_id": native_trade_id or dedup_hash,
+                "trade_event_id": trade_event_id,
+                "native_tid": native_tid,
                 "symbol": symbol,
                 "exchange_ts": int(trade["time"]),
                 "recv_ts": recv_ts,
@@ -136,7 +148,8 @@ def normalize_active_asset_ctx(
     raw_msg_hash = canonical_hash(message)
     data = message["data"]
     ctx = data["ctx"]
-    exchange_ts = int(ctx.get("time", recv_ts))
+    exchange_ts = ctx.get("time")
+    exchange_ts_quality = "exact" if exchange_ts is not None else "missing"
     base = AssetContextEvent(
         asset_ctx_event_id=canonical_hash(
             {
@@ -146,7 +159,8 @@ def normalize_active_asset_ctx(
             }
         ),
         symbol=data["coin"],
-        exchange_ts=exchange_ts,
+        exchange_ts=int(exchange_ts) if exchange_ts is not None else None,
+        exchange_ts_quality=exchange_ts_quality,
         recv_ts=recv_ts,
         mark_px=float(ctx["markPx"]),
         oracle_px=float(ctx["oraclePx"]),
@@ -164,6 +178,7 @@ def normalize_active_asset_ctx(
                 {
                     "symbol": base["symbol"],
                     "exchange_ts": base["exchange_ts"],
+                    "exchange_ts_quality": base["exchange_ts_quality"],
                     "mark_px": base["mark_px"],
                     "oracle_px": base["oracle_px"],
                     "funding_rate": base["funding_rate"],

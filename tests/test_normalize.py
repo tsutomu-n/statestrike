@@ -83,6 +83,8 @@ def test_normalize_trades_fixture_into_trade_rows() -> None:
     assert rows[0]["symbol"] == "BTC"
     assert rows[0]["side"] == "buy"
     assert rows[0]["reconnect_epoch"] == 1
+    assert rows[0]["native_tid"] == "1"
+    assert rows[0]["trade_event_id"] != rows[0]["native_tid"]
     assert rows[1]["side"] == "sell"
 
 
@@ -101,3 +103,6 @@ def test_normalize_asset_context_fixture_into_row() -> None:
     assert row["mark_px"] == 100.3
     assert row["reconnect_epoch"] == 4
     assert round(row["basis"], 6) == 0.003
+    assert row["exchange_ts"] is None
+    assert row["exchange_ts_quality"] == "missing"
+    assert row["next_funding_ts"] is None

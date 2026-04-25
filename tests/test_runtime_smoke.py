@@ -5,7 +5,7 @@ import asyncio
 import pytest
 
 from statestrike.collector import CollectorConfig
-from statestrike.recovery import MessageCaptureContext
+from statestrike.recovery import MessageCaptureContext, MessageIngressMeta
 from statestrike.runtime import RuntimeCapture, collect_public_runtime_capture
 
 
@@ -154,3 +154,44 @@ def test_collect_public_runtime_capture_preserves_recovery_message_contexts() ->
     assert result.book_epoch == 2
     assert result.message_contexts[0].book_event_kind == "recovery_snapshot"
     assert result.message_contexts[0].continuity_status == "recovered"
+
+
+def test_collect_public_runtime_capture_preserves_ingress_metadata() -> None:
+    async def fake_transport(
+        *,
+        config: CollectorConfig,
+        max_messages: int,
+        max_runtime_seconds: int,
+        ping_interval_seconds: int,
+        reconnect_limit: int,
+    ) -> RuntimeCapture:
+        return RuntimeCapture(
+            messages=[{"channel": "trades", "data": {"coin": "BTC"}}],
+            ingress_metadata=[
+                MessageIngressMeta(
+                    recv_wall_ns=1713818880100000000,
+                    recv_mono_ns=123,
+                    recv_seq=1,
+                    connection_id="conn-1",
+                )
+            ],
+            recv_ts_start=1713818880100,
+            started_at="2026-04-24T00:00:00Z",
+            ended_at="2026-04-24T00:00:01Z",
+        )
+
+    result = asyncio.run(
+        collect_public_runtime_capture(
+            config=runtime_config(),
+            max_messages=1,
+            max_runtime_seconds=30,
+            ping_interval_seconds=5,
+            reconnect_limit=2,
+            transport=fake_transport,
+            monotonic_fn=lambda: 0.0,
+        )
+    )
+
+    assert len(result.ingress_metadata) == 1
+    assert result.ingress_metadata[0].recv_seq == 1
+    assert result.ingress_metadata[0].connection_id == "conn-1"

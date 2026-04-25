@@ -10,7 +10,11 @@ from pydantic import BaseModel, ConfigDict, Field
 
 from statestrike.collector import CollectorConfig, build_subscription_requests
 from statestrike.reconnect import ReconnectBackoffPolicy
-from statestrike.recovery import BookRecoveryTracker, MessageCaptureContext
+from statestrike.recovery import (
+    BookRecoveryTracker,
+    MessageCaptureContext,
+    MessageIngressMeta,
+)
 
 RuntimeSleep = Callable[[float], Awaitable[None]]
 RuntimeTransport = Callable[..., Awaitable["RuntimeCapture"]]
@@ -21,6 +25,7 @@ class RuntimeCapture(BaseModel):
 
     messages: list[dict[str, Any]]
     message_contexts: tuple[MessageCaptureContext, ...] = ()
+    ingress_metadata: tuple[MessageIngressMeta, ...] = ()
     recv_ts_start: int
     started_at: str
     ended_at: str
@@ -76,6 +81,7 @@ async def collect_public_runtime_capture(
             return RuntimeCapture(
                 messages=attempt_capture.messages,
                 message_contexts=attempt_capture.message_contexts,
+                ingress_metadata=attempt_capture.ingress_metadata,
                 recv_ts_start=recv_ts_start,
                 started_at=started_at,
                 ended_at=attempt_capture.ended_at,
@@ -104,11 +110,15 @@ async def collect_public_messages_once(
     reconnect_limit: int,
 ) -> RuntimeCapture:
     requests = build_subscription_requests(config)
-    queue: asyncio.Queue[tuple[dict[str, Any], MessageCaptureContext]] = asyncio.Queue()
+    queue: asyncio.Queue[
+        tuple[dict[str, Any], MessageCaptureContext, MessageIngressMeta]
+    ] = asyncio.Queue()
     stop_event = asyncio.Event()
     expected_acks = max(1, len(requests))
     subscription_response_count = 0
     reconnect_count = 0
+    message_seq = 0
+    connection_id = "conn-0"
     recovery_tracker = BookRecoveryTracker(
         symbols=(
             config.allowed_symbols
@@ -118,13 +128,14 @@ async def collect_public_messages_once(
     )
 
     def on_message(message: dict[str, Any], _ws: Any) -> None:
-        nonlocal reconnect_count, subscription_response_count
+        nonlocal reconnect_count, subscription_response_count, message_seq, connection_id
         channel = message.get("channel")
         if channel == "subscriptionResponse":
             subscription_response_count += 1
             next_reconnect_count = max(0, (subscription_response_count // expected_acks) - 1)
             while reconnect_count < next_reconnect_count:
                 reconnect_count += 1
+                connection_id = f"conn-{reconnect_count}"
                 recovery_tracker.mark_reconnect()
             if reconnect_count > reconnect_limit:
                 stop_event.set()
@@ -132,7 +143,16 @@ async def collect_public_messages_once(
         if channel == "pong":
             return
         if channel in config.channels:
-            queue.put_nowait((message, recovery_tracker.classify_message(message)))
+            ingress_meta = MessageIngressMeta(
+                recv_wall_ns=time.time_ns(),
+                recv_mono_ns=time.monotonic_ns(),
+                recv_seq=message_seq,
+                connection_id=connection_id,
+            )
+            message_seq += 1
+            queue.put_nowait(
+                (message, recovery_tracker.classify_message(message), ingress_meta)
+            )
             if queue.qsize() >= max_messages:
                 stop_event.set()
 
@@ -140,6 +160,7 @@ async def collect_public_messages_once(
     recv_ts_start = int(time.time_ns() // 1_000_000)
     messages: list[dict[str, Any]] = []
     message_contexts: list[MessageCaptureContext] = []
+    ingress_metadata: list[MessageIngressMeta] = []
 
     async with pybotters.Client() as client:
         app = client.ws_connect(
@@ -159,7 +180,9 @@ async def collect_public_messages_once(
             if timeout <= 0:
                 break
             try:
-                message, message_context = await asyncio.wait_for(queue.get(), timeout=timeout)
+                message, message_context, ingress_meta = await asyncio.wait_for(
+                    queue.get(), timeout=timeout
+                )
             except asyncio.TimeoutError:
                 current_ws = app.current_ws
                 if current_ws is not None:
@@ -170,6 +193,7 @@ async def collect_public_messages_once(
                 continue
             messages.append(message)
             message_contexts.append(message_context)
+            ingress_metadata.append(ingress_meta)
         if app.current_ws is not None:
             await app.current_ws.close()
 
@@ -182,6 +206,7 @@ async def collect_public_messages_once(
     return RuntimeCapture(
         messages=messages,
         message_contexts=tuple(message_contexts),
+        ingress_metadata=tuple(ingress_metadata),
         recv_ts_start=recv_ts_start,
         started_at=started_at,
         ended_at=_utc_now_isoformat(),

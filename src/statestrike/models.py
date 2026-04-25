@@ -46,6 +46,7 @@ class BookLevel(FrozenModel):
 
 class TradeEvent(FrozenModel):
     trade_event_id: str
+    native_tid: str | None = None
     symbol: str
     exchange_ts: int = Field(ge=0)
     recv_ts: int = Field(ge=0)
@@ -62,7 +63,8 @@ class TradeEvent(FrozenModel):
 class AssetContextEvent(FrozenModel):
     asset_ctx_event_id: str
     symbol: str
-    exchange_ts: int = Field(ge=0)
+    exchange_ts: int | None = Field(default=None, ge=0)
+    exchange_ts_quality: Literal["exact", "missing", "derived"] = "exact"
     recv_ts: int = Field(ge=0)
     mark_px: float = Field(gt=0)
     oracle_px: float = Field(gt=0)
@@ -82,12 +84,8 @@ class AssetContextEvent(FrozenModel):
     def normalize_derived_fields(cls, data: Any) -> Any:
         if not isinstance(data, dict):
             return data
-        exchange_ts_ms = int(data["exchange_ts"])
         data = dict(data)
-        data.setdefault(
-            "next_funding_ts",
-            ((exchange_ts_ms // 3_600_000) + 1) * 3_600_000,
-        )
+        data.setdefault("next_funding_ts", None)
         if "basis" not in data or data["basis"] is None:
             data["basis"] = (float(data["mark_px"]) - float(data["oracle_px"])) / float(
                 data["oracle_px"]

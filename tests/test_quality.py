@@ -206,6 +206,7 @@ def test_quality_audit_counts_gap_and_duplicate_metrics(tmp_path) -> None:
         rows=[
             {
                 "trade_event_id": "t-1",
+                "native_tid": "1",
                 "symbol": "BTC",
                 "exchange_ts": 1000,
                 "recv_ts": 1010,
@@ -220,6 +221,7 @@ def test_quality_audit_counts_gap_and_duplicate_metrics(tmp_path) -> None:
             },
             {
                 "trade_event_id": "t-2",
+                "native_tid": "2",
                 "symbol": "BTC",
                 "exchange_ts": 1000,
                 "recv_ts": 1011,
@@ -234,6 +236,7 @@ def test_quality_audit_counts_gap_and_duplicate_metrics(tmp_path) -> None:
             },
             {
                 "trade_event_id": "t-3",
+                "native_tid": "3",
                 "symbol": "BTC",
                 "exchange_ts": 200000,
                 "recv_ts": 900,
@@ -257,6 +260,7 @@ def test_quality_audit_counts_gap_and_duplicate_metrics(tmp_path) -> None:
                 "asset_ctx_event_id": "ctx-1",
                 "symbol": "BTC",
                 "exchange_ts": 1000,
+                "exchange_ts_quality": "exact",
                 "recv_ts": 1000,
                 "mark_px": 100.0,
                 "oracle_px": 99.0,
@@ -275,6 +279,7 @@ def test_quality_audit_counts_gap_and_duplicate_metrics(tmp_path) -> None:
                 "asset_ctx_event_id": "ctx-2",
                 "symbol": "BTC",
                 "exchange_ts": 500000,
+                "exchange_ts_quality": "exact",
                 "recv_ts": 500001,
                 "mark_px": 101.0,
                 "oracle_px": 100.0,
@@ -311,3 +316,46 @@ def test_quality_audit_counts_gap_and_duplicate_metrics(tmp_path) -> None:
     assert report.non_monotonic_exchange_ts_count >= 1
     assert report.non_monotonic_recv_ts_count >= 1
     assert report.empty_snapshot_count == 1
+
+
+def test_quality_audit_ignores_missing_asset_context_exchange_timestamps(tmp_path) -> None:
+    normalized = NormalizedWriter(root=tmp_path)
+    trading_date = date(2026, 4, 22)
+
+    normalized.write_rows(
+        table="asset_ctx",
+        trading_date=trading_date,
+        symbol="BTC",
+        rows=[
+            {
+                "asset_ctx_event_id": "ctx-1",
+                "symbol": "BTC",
+                "exchange_ts": None,
+                "exchange_ts_quality": "missing",
+                "recv_ts": 500000,
+                "mark_px": 101.0,
+                "oracle_px": 100.0,
+                "funding_rate": 0.0002,
+                "open_interest": 11.0,
+                "mid_px": 100.5,
+                "basis": 0.01,
+                "next_funding_ts": None,
+                "capture_session_id": "session-1",
+                "reconnect_epoch": 1,
+                "source": "ws",
+                "raw_msg_hash": "raw-c2",
+                "dedup_hash": "ctx-2",
+            }
+        ],
+    )
+
+    report = run_quality_audit(
+        normalized_root=tmp_path,
+        quarantine_root=tmp_path,
+        trading_date=trading_date,
+        symbols=("BTC",),
+        asset_ctx_stale_threshold_ms=1,
+    )
+
+    assert report.asset_ctx_stale_count == 0
+    assert report.asset_ctx_gap_count == 0

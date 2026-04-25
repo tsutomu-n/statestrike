@@ -31,9 +31,11 @@ from statestrike.paths import (
 from statestrike.quality import QualityAuditReport, QualityAuditThresholds, run_quality_audit
 from statestrike.recovery import (
     MessageCaptureContext,
+    MessageIngressMeta,
     count_non_recoverable_book_gaps,
     count_recoverable_book_gaps,
     max_book_epoch,
+    resolve_ingress_metadata,
     resolve_message_contexts,
 )
 from statestrike.runtime import collect_public_runtime_capture
@@ -63,6 +65,7 @@ class SmokeTransportCapture(BaseModel):
 
     messages: list[dict[str, Any]]
     message_contexts: tuple[MessageCaptureContext, ...] = ()
+    ingress_metadata: tuple[MessageIngressMeta, ...] = ()
     recv_ts_start: int
     started_at: str
     ended_at: str
@@ -145,6 +148,7 @@ def run_smoke_batch(
     trading_date: date,
     messages: list[dict[str, Any]],
     message_contexts: list[MessageCaptureContext] | tuple[MessageCaptureContext, ...] | None = None,
+    ingress_metadata: list[MessageIngressMeta] | tuple[MessageIngressMeta, ...] | None = None,
     config: CollectorConfig,
     batch_id: str = "0001",
     capture_session_id: str | None = None,
@@ -181,6 +185,11 @@ def run_smoke_batch(
         reconnect_epoch=reconnect_epoch,
         book_epoch=book_epoch,
     )
+    resolved_ingress = resolve_ingress_metadata(
+        messages=messages,
+        ingress_metadata=ingress_metadata,
+        recv_ts_start=recv_ts_start,
+    )
 
     grouped_messages = _group_messages_by_channel_and_symbol(
         messages=messages,
@@ -198,41 +207,33 @@ def run_smoke_batch(
 
     observed_symbols = tuple(sorted({symbol for _, symbol in grouped_messages}))
     audit_symbols = config.allowed_symbols or observed_symbols
-    recv_ts = recv_ts_start
+    batch = collect_market_batch(
+        messages=messages,
+        message_contexts=resolved_contexts,
+        ingress_metadata=resolved_ingress,
+        config=config,
+        capture_session_id=capture_session_id,
+        reconnect_epoch=reconnect_epoch,
+        book_epoch=book_epoch,
+        recv_ts_start=recv_ts_start,
+    )
+    for table, rows in batch.normalized_rows.items():
+        validation = validate_records(table, rows)
+        for symbol, symbol_rows in _group_rows_by_symbol(validation.valid_rows).items():
+            normalized_paths[f"{table}:{symbol}"] = normalized_writer.write_rows(
+                table=table,
+                trading_date=trading_date,
+                symbol=symbol,
+                rows=symbol_rows,
+            )
+        for symbol, symbol_rows in _group_rows_by_symbol(validation.quarantined_rows).items():
+            quarantine_paths[f"{table}:{symbol}"] = quarantine_writer.write_rows(
+                table=table,
+                trading_date=trading_date,
+                symbol=symbol,
+                rows=symbol_rows,
+            )
     for symbol in observed_symbols:
-        symbol_payloads = [
-            (message, context)
-            for message, context in zip(messages, resolved_contexts, strict=True)
-            if _extract_symbol(message) == symbol
-        ]
-        symbol_messages = [message for message, _ in symbol_payloads]
-        symbol_contexts = [context for _, context in symbol_payloads]
-        batch = collect_market_batch(
-            messages=symbol_messages,
-            message_contexts=symbol_contexts,
-            config=config,
-            capture_session_id=capture_session_id,
-            reconnect_epoch=reconnect_epoch,
-            book_epoch=book_epoch,
-            recv_ts_start=recv_ts,
-        )
-        recv_ts += len(symbol_messages)
-        for table, rows in batch.normalized_rows.items():
-            validation = validate_records(table, rows)
-            if validation.valid_rows:
-                normalized_paths[f"{table}:{symbol}"] = normalized_writer.write_rows(
-                    table=table,
-                    trading_date=trading_date,
-                    symbol=symbol,
-                    rows=validation.valid_rows,
-                )
-            if validation.quarantined_rows:
-                quarantine_paths[f"{table}:{symbol}"] = quarantine_writer.write_rows(
-                    table=table,
-                    trading_date=trading_date,
-                    symbol=symbol,
-                    rows=validation.quarantined_rows,
-                )
         export_nautilus_catalog(
             normalized_root=root,
             export_root=root,
@@ -502,6 +503,7 @@ async def _run_single_smoke_capture(
         trading_date=trading_date or date.today(),
         messages=capture.messages,
         message_contexts=capture.message_contexts,
+        ingress_metadata=capture.ingress_metadata,
         config=config,
         batch_id=batch_id,
         capture_session_id=capture_session_id,
@@ -545,6 +547,7 @@ async def collect_public_smoke_messages(
     return SmokeTransportCapture(
         messages=capture.messages,
         message_contexts=capture.message_contexts,
+        ingress_metadata=capture.ingress_metadata,
         recv_ts_start=capture.recv_ts_start,
         started_at=capture.started_at,
         ended_at=capture.ended_at,
@@ -570,6 +573,16 @@ def _group_messages_by_channel_and_symbol(
             continue
         key = (message["channel"], symbol)
         grouped.setdefault(key, []).append(message)
+    return grouped
+
+
+def _group_rows_by_symbol(rows: list[dict[str, Any]]) -> dict[str, list[dict[str, Any]]]:
+    grouped: dict[str, list[dict[str, Any]]] = {}
+    for row in rows:
+        symbol = str(row.get("symbol", "")).upper()
+        if not symbol:
+            continue
+        grouped.setdefault(symbol, []).append(row)
     return grouped
 
 

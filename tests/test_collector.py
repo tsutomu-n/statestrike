@@ -10,7 +10,7 @@ from statestrike.collector import (
     build_subscription_requests,
     collect_market_batch,
 )
-from statestrike.recovery import MessageCaptureContext
+from statestrike.recovery import MessageCaptureContext, MessageIngressMeta
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "hyperliquid"
@@ -177,6 +177,60 @@ def test_collect_market_batch_applies_message_recovery_contexts() -> None:
         result.normalized_rows["book_events"][1]["recovery_classification"]
         == "recoverable"
     )
+
+
+def test_collect_market_batch_uses_ingress_metadata_recv_timestamps_in_order() -> None:
+    config = CollectorConfig(
+        allowed_symbols=("BTC",),
+        source_priority=("ws", "info", "s3", "tardis"),
+        market_data_network="mainnet",
+        flush_interval_ms=1000,
+        snapshot_recovery_enabled=True,
+        channels=("l2Book", "trades", "activeAssetCtx"),
+        candle_interval=None,
+    )
+
+    ingress = [
+        MessageIngressMeta(
+            recv_wall_ns=1713818880102000000,
+            recv_mono_ns=100,
+            recv_seq=9,
+            connection_id="conn-1",
+        ),
+        MessageIngressMeta(
+            recv_wall_ns=1713818880100000000,
+            recv_mono_ns=90,
+            recv_seq=7,
+            connection_id="conn-1",
+        ),
+        MessageIngressMeta(
+            recv_wall_ns=1713818880101000000,
+            recv_mono_ns=95,
+            recv_seq=8,
+            connection_id="conn-1",
+        ),
+    ]
+
+    result = collect_market_batch(
+        messages=[
+            load_fixture("l2_book.json"),
+            load_fixture("trades.json"),
+            load_fixture("active_asset_ctx.json"),
+        ],
+        ingress_metadata=ingress,
+        config=config,
+        capture_session_id="session-1",
+        reconnect_epoch=0,
+        book_epoch=1,
+        recv_ts_start=1713818880999,
+    )
+
+    assert result.normalized_rows["book_events"][0]["recv_ts"] == 1713818880102
+    assert [row["recv_ts"] for row in result.normalized_rows["trades"]] == [
+        1713818880100,
+        1713818880100,
+    ]
+    assert result.normalized_rows["asset_ctx"][0]["recv_ts"] == 1713818880101
 
 
 def test_collector_config_validates_runtime_backoff_bounds() -> None:

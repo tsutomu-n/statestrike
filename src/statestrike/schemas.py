@@ -66,6 +66,7 @@ BOOK_LEVELS_SCHEMA = pa.DataFrameSchema(
 TRADES_SCHEMA = pa.DataFrameSchema(
     {
         "trade_event_id": pa.Column(object),
+        "native_tid": pa.Column(object, nullable=True),
         "symbol": pa.Column(str),
         "exchange_ts": pa.Column(int, pa.Check.ge(0)),
         "recv_ts": pa.Column(int, pa.Check.ge(0)),
@@ -87,7 +88,11 @@ ASSET_CTX_SCHEMA = pa.DataFrameSchema(
     {
         "asset_ctx_event_id": pa.Column(str),
         "symbol": pa.Column(str),
-        "exchange_ts": pa.Column(int, pa.Check.ge(0)),
+        "exchange_ts": pa.Column(object, nullable=True),
+        "exchange_ts_quality": pa.Column(
+            str,
+            pa.Check.isin(["exact", "missing", "derived"]),
+        ),
         "recv_ts": pa.Column(int, pa.Check.ge(0)),
         "mark_px": pa.Column(float, pa.Check.gt(0)),
         "oracle_px": pa.Column(float, pa.Check.gt(0)),
@@ -95,7 +100,7 @@ ASSET_CTX_SCHEMA = pa.DataFrameSchema(
         "open_interest": pa.Column(float, pa.Check.ge(0)),
         "mid_px": pa.Column(float, pa.Check.gt(0)),
         "basis": pa.Column(float),
-        "next_funding_ts": pa.Column(int, pa.Check.ge(0)),
+        "next_funding_ts": pa.Column(object, nullable=True),
         "capture_session_id": pa.Column(str),
         "reconnect_epoch": pa.Column(int, pa.Check.ge(0)),
         "source": pa.Column(str, pa.Check.isin(["ws", "info", "s3", "tardis"])),

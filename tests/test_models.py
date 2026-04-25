@@ -44,11 +44,12 @@ def test_trade_event_normalizes_symbol_and_requires_positive_size() -> None:
     assert trade.side == "sell"
 
 
-def test_asset_context_computes_basis_and_next_funding_hour() -> None:
+def test_asset_context_preserves_missing_exchange_timestamp_quality() -> None:
     ctx = AssetContextEvent(
         asset_ctx_event_id="ctx-1",
         symbol="SOL",
-        exchange_ts=1713818880123,
+        exchange_ts=None,
+        exchange_ts_quality="missing",
         recv_ts=1713818880321,
         mark_px=151.5,
         oracle_px=150.0,
@@ -58,7 +59,25 @@ def test_asset_context_computes_basis_and_next_funding_hour() -> None:
     )
 
     assert round(ctx.basis, 6) == 0.01
-    assert ctx.next_funding_ts == 1713819600000
+    assert ctx.exchange_ts is None
+    assert ctx.next_funding_ts is None
+
+
+def test_trade_event_keeps_native_tid_separate_from_canonical_trade_event_id() -> None:
+    trade = TradeEvent(
+        trade_event_id="canonical-trade-1",
+        native_tid="17",
+        symbol="btc",
+        exchange_ts=1713818880000,
+        recv_ts=1713818880005,
+        price=100.0,
+        size=0.5,
+        side="buy",
+    )
+
+    assert trade.symbol == "BTC"
+    assert trade.trade_event_id == "canonical-trade-1"
+    assert trade.native_tid == "17"
 
 
 def test_gap_policy_matches_approved_channel_rules() -> None:

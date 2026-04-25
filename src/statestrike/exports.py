@@ -97,7 +97,26 @@ def export_nautilus_catalog(
         ]
     )
     trade_ticks = trades.copy()
-    if not trade_ticks.empty:
+    if trade_ticks.empty:
+        trade_ticks = pd.DataFrame(
+            columns=[
+                "instrument_id",
+                "trade_event_id",
+                "native_tid",
+                "symbol",
+                "exchange_ts",
+                "recv_ts",
+                "price",
+                "size",
+                "side",
+                "capture_session_id",
+                "reconnect_epoch",
+                "source",
+                "raw_msg_hash",
+                "dedup_hash",
+            ]
+        )
+    else:
         trade_ticks.insert(0, "instrument_id", instrument_id)
         trade_ticks = trade_ticks.sort_values(
             by=["exchange_ts", "recv_ts", "trade_event_id"]
@@ -109,10 +128,34 @@ def export_nautilus_catalog(
         instrument_id=instrument_id,
     )
     asset_ctx_export = asset_ctx.copy()
-    if not asset_ctx_export.empty:
+    if asset_ctx_export.empty:
+        asset_ctx_export = pd.DataFrame(
+            columns=[
+                "instrument_id",
+                "asset_ctx_event_id",
+                "symbol",
+                "exchange_ts",
+                "exchange_ts_quality",
+                "recv_ts",
+                "mark_px",
+                "oracle_px",
+                "funding_rate",
+                "open_interest",
+                "mid_px",
+                "basis",
+                "next_funding_ts",
+                "capture_session_id",
+                "reconnect_epoch",
+                "source",
+                "raw_msg_hash",
+                "dedup_hash",
+            ]
+        )
+    else:
         asset_ctx_export.insert(0, "instrument_id", instrument_id)
         asset_ctx_export = asset_ctx_export.sort_values(
-            by=["exchange_ts", "recv_ts", "asset_ctx_event_id"]
+            by=["exchange_ts_quality", "exchange_ts", "recv_ts", "asset_ctx_event_id"],
+            na_position="last",
         ).reset_index(drop=True)
 
     _write_parquet_frame(path=export_dir / "instrument.parquet", frame=instrument_frame)
@@ -356,9 +399,8 @@ def _summarize_export_frame(frame: pd.DataFrame) -> ExportTableValidation:
         symbol_count = int(frame["instrument_id"].nunique(dropna=True))
     exchange_ts_monotonic = True
     if "exchange_ts" in frame:
-        exchange_ts_monotonic = _is_non_decreasing(
-            frame["exchange_ts"].to_numpy(dtype=np.int64)
-        )
+        exchange_ts_values = frame["exchange_ts"].dropna().to_numpy(dtype=np.int64)
+        exchange_ts_monotonic = _is_non_decreasing(exchange_ts_values)
     return ExportTableValidation(
         row_count=int(len(frame)),
         symbol_count=symbol_count,

@@ -406,7 +406,11 @@ def _summarize_skew(
 ) -> dict[str, int | None]:
     if not files:
         return {"min_ms": None, "max_ms": None, "avg_ms": None, "peak_abs_ms": None}
-    source = _parquet_source(files)
+    source = _quality_metric_source(
+        connection=connection,
+        files=files,
+        require_exact_exchange_ts=True,
+    )
     min_ms, max_ms, avg_ms = connection.execute(
         f"""
         SELECT
@@ -517,7 +521,11 @@ def _count_stale_asset_ctx(
 ) -> int:
     if not files:
         return 0
-    source = _parquet_source(files)
+    source = _quality_metric_source(
+        connection=connection,
+        files=files,
+        require_exact_exchange_ts=True,
+    )
     return int(
         connection.execute(
             f"""
@@ -666,7 +674,11 @@ def _count_asset_ctx_gaps(
 ) -> int:
     if not files:
         return 0
-    source = _parquet_source(files)
+    source = _quality_metric_source(
+        connection=connection,
+        files=files,
+        require_exact_exchange_ts=True,
+    )
     return int(
         connection.execute(
             f"""
@@ -698,7 +710,11 @@ def _count_non_monotonic_timestamps(
 ) -> int:
     if not files:
         return 0
-    source = _parquet_source(files)
+    source = _quality_metric_source(
+        connection=connection,
+        files=files,
+        require_exact_exchange_ts=(target_column == "exchange_ts"),
+    )
     order_by = (
         "recv_ts, exchange_ts, dedup_hash"
         if target_column == "exchange_ts"
@@ -743,4 +759,22 @@ def _count_empty_snapshots(
               AND (n_bids = 0 OR n_asks = 0)
             """
         ).fetchone()[0]
+    )
+
+
+def _quality_metric_source(
+    *,
+    connection: duckdb.DuckDBPyConnection,
+    files: list[Path],
+    require_exact_exchange_ts: bool,
+) -> str:
+    source = _parquet_source(files)
+    if not require_exact_exchange_ts:
+        return source
+    columns = set(connection.execute(f"SELECT * FROM {source} LIMIT 0").fetchdf().columns)
+    if "exchange_ts_quality" not in columns:
+        return source
+    return (
+        f"(SELECT * FROM {source} "
+        "WHERE exchange_ts_quality = 'exact' AND exchange_ts IS NOT NULL)"
     )

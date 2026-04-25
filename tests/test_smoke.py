@@ -10,7 +10,7 @@ import duckdb
 import pytest
 
 from statestrike.collector import CollectorConfig
-from statestrike.recovery import MessageCaptureContext
+from statestrike.recovery import MessageCaptureContext, MessageIngressMeta
 from statestrike.settings import Settings
 from statestrike.smoke import (
     SmokeTransportCapture,
@@ -118,6 +118,73 @@ def test_run_smoke_batch_persists_phase15_artifacts(tmp_path) -> None:
     assert result.export_validations["BTC"].nautilus_tables["trade_ticks"].row_count == 1
     assert result.export_validations["BTC"].hftbacktest.row_count == 5
     assert export_json["hftbacktest"]["row_count"] == 5
+
+
+def test_run_smoke_batch_normalizes_full_ordered_stream_once_before_partitioning(
+    tmp_path,
+) -> None:
+    config = CollectorConfig(
+        allowed_symbols=("BTC", "ETH"),
+        source_priority=("ws", "info", "s3", "tardis"),
+        market_data_network="mainnet",
+        flush_interval_ms=1000,
+        snapshot_recovery_enabled=True,
+        channels=("trades",),
+        candle_interval=None,
+    )
+    btc_trades = load_fixture("trades.json")
+    eth_trades = with_symbol(load_fixture("trades.json"), "ETH")
+    eth_trades["data"][0]["time"] = 1713818880040
+    eth_trades["data"][0]["tid"] = 3
+    eth_trades["data"][1]["time"] = 1713818880070
+    eth_trades["data"][1]["tid"] = 4
+    ingress = [
+        MessageIngressMeta(
+            recv_wall_ns=1713818880101000000,
+            recv_mono_ns=11,
+            recv_seq=2,
+            connection_id="conn-1",
+        ),
+        MessageIngressMeta(
+            recv_wall_ns=1713818880100000000,
+            recv_mono_ns=10,
+            recv_seq=1,
+            connection_id="conn-1",
+        ),
+    ]
+
+    result = run_smoke_batch(
+        root=tmp_path,
+        trading_date=date(2026, 4, 23),
+        messages=[btc_trades, eth_trades],
+        ingress_metadata=ingress,
+        config=config,
+        capture_session_id="session-ordered",
+        batch_id="0001",
+        recv_ts_start=1713818880999,
+    )
+
+    connection = duckdb.connect()
+    try:
+        btc_rows = connection.execute(
+            f"""
+            SELECT recv_ts, trade_event_id
+            FROM read_parquet('{result.normalized_paths["trades:BTC"].as_posix()}')
+            ORDER BY exchange_ts, trade_event_id
+            """
+        ).fetchall()
+        eth_rows = connection.execute(
+            f"""
+            SELECT recv_ts, trade_event_id
+            FROM read_parquet('{result.normalized_paths["trades:ETH"].as_posix()}')
+            ORDER BY exchange_ts, trade_event_id
+            """
+        ).fetchall()
+    finally:
+        connection.close()
+
+    assert [recv_ts for recv_ts, _ in btc_rows] == [1713818880101, 1713818880101]
+    assert [recv_ts for recv_ts, _ in eth_rows] == [1713818880100, 1713818880100]
 
 
 def test_run_smoke_session_uses_transport_hook_and_tracks_reconnects(tmp_path) -> None:
