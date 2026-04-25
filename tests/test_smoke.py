@@ -89,6 +89,11 @@ def test_run_smoke_batch_persists_phase15_artifacts(tmp_path) -> None:
     assert result.audit_report_paths["json"].exists()
     assert result.audit_report_paths["md"].exists()
     assert result.export_validation_report_paths["BTC"].exists()
+    assert manifest["capture_semantics_version"] == "phase1_truth_capture_v1"
+    assert manifest["truth_capture_artifact"] == "capture_log"
+    assert manifest["derived_capture_artifacts"] == ["raw_ws"]
+    assert manifest["truth_export_targets"] == ["nautilus"]
+    assert manifest["corrected_export_targets"] == ["hftbacktest"]
     assert manifest["row_count"] == 4
     assert manifest["book_epoch_count"] == 1
     assert manifest["book_continuity_gap_count"] == 0
@@ -265,6 +270,8 @@ def test_run_smoke_session_uses_transport_hook_and_tracks_reconnects(tmp_path) -
     assert result.audit_report.thresholds.skew_severe_ms == 70
     assert result.audit_report.thresholds.asset_ctx_stale_threshold_ms == 654321
     assert manifest["capture_session_id"] == "session-2"
+    assert manifest["truth_capture_artifact"] == "capture_log"
+    assert manifest["corrected_export_targets"] == ["hftbacktest"]
     assert result.capture_log_path.exists()
     assert manifest["started_at"] == "2026-04-23T00:00:00Z"
     assert manifest["ended_at"] == "2026-04-23T00:05:00Z"

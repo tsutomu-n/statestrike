@@ -95,6 +95,11 @@ class AssetContextEvent(FrozenModel):
 
 class ManifestRecord(FrozenModel):
     capture_session_id: str
+    capture_semantics_version: str = "phase1_truth_capture_v1"
+    truth_capture_artifact: str = "capture_log"
+    derived_capture_artifacts: tuple[str, ...] = ("raw_ws",)
+    truth_export_targets: tuple[str, ...] = ("nautilus",)
+    corrected_export_targets: tuple[str, ...] = ("hftbacktest",)
     started_at: str
     ended_at: str
     channels: tuple[str, ...]

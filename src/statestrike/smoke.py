@@ -293,6 +293,11 @@ def run_smoke_batch(
     )
     manifest = ManifestRecord(
         capture_session_id=capture_session_id,
+        capture_semantics_version="phase1_truth_capture_v1",
+        truth_capture_artifact="capture_log",
+        derived_capture_artifacts=("raw_ws",),
+        truth_export_targets=("nautilus",),
+        corrected_export_targets=("hftbacktest",),
         started_at=started_at,
         ended_at=ended_at or _utc_now_isoformat(),
         channels=tuple(sorted({message["channel"] for message in messages})),

@@ -57,7 +57,10 @@ def test_raw_writer_writes_compressed_jsonl_and_manifest(tmp_path) -> None:
     )
 
     assert manifest_path.name == f"{capture_session_id}.json"
-    assert json.loads(manifest_path.read_text(encoding="utf-8"))["row_count"] == 1
+    manifest_json = json.loads(manifest_path.read_text(encoding="utf-8"))
+    assert manifest_json["row_count"] == 1
+    assert manifest_json["truth_capture_artifact"] == "capture_log"
+    assert manifest_json["corrected_export_targets"] == ["hftbacktest"]
 
 
 def test_capture_log_writer_writes_session_global_ordered_entries(tmp_path) -> None:
