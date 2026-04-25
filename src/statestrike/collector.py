@@ -146,6 +146,7 @@ def collect_market_batch(
         messages=messages,
         ingress_metadata=ingress_metadata,
         recv_ts_start=recv_ts_start,
+        allow_fixture_fallback=(config.run_mode == "fixture"),
     )
     normalized_rows: dict[str, list[dict[str, Any]]] = {
         "book_events": [],

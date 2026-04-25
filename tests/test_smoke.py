@@ -44,6 +44,29 @@ def with_symbol(message: dict, symbol: str) -> dict:
     return message
 
 
+def smoke_capture(
+    *,
+    messages: list[dict],
+    recv_ts_start: int,
+    **kwargs,
+) -> SmokeTransportCapture:
+    ingress_metadata = tuple(
+        MessageIngressMeta(
+            recv_wall_ns=(recv_ts_start + index) * 1_000_000,
+            recv_mono_ns=index,
+            recv_seq=index,
+            connection_id="smoke-test-conn",
+        )
+        for index, _ in enumerate(messages)
+    )
+    return SmokeTransportCapture(
+        messages=messages,
+        ingress_metadata=ingress_metadata,
+        recv_ts_start=recv_ts_start,
+        **kwargs,
+    )
+
+
 def test_run_smoke_batch_persists_phase15_artifacts(tmp_path) -> None:
     invalid_trades = copy.deepcopy(load_fixture("trades.json"))
     invalid_trades["data"][0]["sz"] = "0.0"
@@ -221,7 +244,7 @@ def test_run_smoke_session_uses_transport_hook_and_tracks_reconnects(tmp_path) -
         captured_args["max_runtime_seconds"] = max_runtime_seconds
         captured_args["ping_interval_seconds"] = ping_interval_seconds
         captured_args["reconnect_limit"] = reconnect_limit
-        return SmokeTransportCapture(
+        return smoke_capture(
             messages=[
                 load_fixture("l2_book.json"),
                 load_fixture("trades.json"),
@@ -289,7 +312,7 @@ def test_run_smoke_session_propagates_runtime_epochs_into_normalized_rows(tmp_pa
         ping_interval_seconds: int,
         reconnect_limit: int,
     ) -> SmokeTransportCapture:
-        return SmokeTransportCapture(
+        return smoke_capture(
             messages=[
                 load_fixture("l2_book.json"),
                 load_fixture("trades.json"),
@@ -367,7 +390,7 @@ def test_run_smoke_session_persists_book_continuity_manifest_summary(tmp_path) -
         ping_interval_seconds: int,
         reconnect_limit: int,
     ) -> SmokeTransportCapture:
-        return SmokeTransportCapture(
+        return smoke_capture(
             messages=[
                 load_fixture("l2_book.json"),
                 load_fixture("trades.json"),
@@ -433,7 +456,7 @@ def test_run_smoke_campaign_accumulates_daily_artifacts_across_sessions(
     tmp_path,
 ) -> None:
     captures = [
-        SmokeTransportCapture(
+        smoke_capture(
             messages=[
                 load_fixture("l2_book.json"),
                 load_fixture("trades.json"),
@@ -443,7 +466,7 @@ def test_run_smoke_campaign_accumulates_daily_artifacts_across_sessions(
             started_at="2026-04-23T00:00:00Z",
             ended_at="2026-04-23T00:01:00Z",
         ),
-        SmokeTransportCapture(
+        smoke_capture(
             messages=[
                 load_fixture("l2_book.json"),
                 load_fixture("trades.json"),
@@ -519,7 +542,7 @@ def test_run_smoke_campaign_recomputes_final_reports_from_campaign_scope(
     tmp_path,
 ) -> None:
     captures = [
-        SmokeTransportCapture(
+        smoke_capture(
             messages=[
                 load_fixture("l2_book.json"),
                 load_fixture("trades.json"),
@@ -529,7 +552,7 @@ def test_run_smoke_campaign_recomputes_final_reports_from_campaign_scope(
             started_at="2026-04-23T00:00:00Z",
             ended_at="2026-04-23T00:01:00Z",
         ),
-        SmokeTransportCapture(
+        smoke_capture(
             messages=[
                 with_symbol(load_fixture("l2_book.json"), "ETH"),
                 with_symbol(load_fixture("trades.json"), "ETH"),
@@ -599,7 +622,7 @@ def test_run_smoke_campaign_persists_failed_summary_when_later_session_crashes(
         nonlocal call_count
         call_count += 1
         if call_count == 1:
-            return SmokeTransportCapture(
+            return smoke_capture(
                 messages=[
                     load_fixture("l2_book.json"),
                     load_fixture("trades.json"),
@@ -665,7 +688,7 @@ def test_run_smoke_campaign_resume_continues_from_persisted_summary(
         ping_interval_seconds: int,
         reconnect_limit: int,
     ) -> SmokeTransportCapture:
-        return SmokeTransportCapture(
+        return smoke_capture(
             messages=[
                 load_fixture("l2_book.json"),
                 load_fixture("trades.json"),
@@ -688,7 +711,7 @@ def test_run_smoke_campaign_resume_continues_from_persisted_summary(
     ) -> SmokeTransportCapture:
         nonlocal resumed_calls
         resumed_calls += 1
-        return SmokeTransportCapture(
+        return smoke_capture(
             messages=[
                 load_fixture("l2_book.json"),
                 load_fixture("trades.json"),
@@ -769,7 +792,7 @@ def test_run_smoke_campaign_resume_rejects_scope_drift(
         ping_interval_seconds: int,
         reconnect_limit: int,
     ) -> SmokeTransportCapture:
-        return SmokeTransportCapture(
+        return smoke_capture(
             messages=[
                 load_fixture("l2_book.json"),
                 load_fixture("trades.json"),
@@ -792,7 +815,7 @@ def test_run_smoke_campaign_resume_rejects_scope_drift(
     ) -> SmokeTransportCapture:
         nonlocal resumed_calls
         resumed_calls += 1
-        return SmokeTransportCapture(
+        return smoke_capture(
             messages=[
                 load_fixture("l2_book.json"),
                 load_fixture("trades.json"),
@@ -857,7 +880,7 @@ def test_run_smoke_campaign_resume_rejects_missing_persisted_artifacts(
         ping_interval_seconds: int,
         reconnect_limit: int,
     ) -> SmokeTransportCapture:
-        return SmokeTransportCapture(
+        return smoke_capture(
             messages=[
                 load_fixture("l2_book.json"),
                 load_fixture("trades.json"),
@@ -880,7 +903,7 @@ def test_run_smoke_campaign_resume_rejects_missing_persisted_artifacts(
     ) -> SmokeTransportCapture:
         nonlocal resumed_calls
         resumed_calls += 1
-        return SmokeTransportCapture(
+        return smoke_capture(
             messages=[
                 load_fixture("l2_book.json"),
                 load_fixture("trades.json"),
@@ -949,7 +972,7 @@ def test_run_smoke_campaign_writes_summary_via_atomic_replace(
         ping_interval_seconds: int,
         reconnect_limit: int,
     ) -> SmokeTransportCapture:
-        return SmokeTransportCapture(
+        return smoke_capture(
             messages=[
                 load_fixture("l2_book.json"),
                 load_fixture("trades.json"),
@@ -998,7 +1021,7 @@ def test_smoke_main_runs_fake_transport_and_prints_json_summary(
         assert max_runtime_seconds == 300
         assert ping_interval_seconds == 15
         assert reconnect_limit == 2
-        return SmokeTransportCapture(
+        return smoke_capture(
             messages=[
                 load_fixture("l2_book.json"),
                 load_fixture("trades.json"),
@@ -1044,7 +1067,7 @@ def test_smoke_main_runs_campaign_mode_and_prints_json_summary(
     tmp_path, capsys
 ) -> None:
     captures = [
-        SmokeTransportCapture(
+        smoke_capture(
             messages=[
                 load_fixture("l2_book.json"),
                 load_fixture("trades.json"),
@@ -1054,7 +1077,7 @@ def test_smoke_main_runs_campaign_mode_and_prints_json_summary(
             started_at="2026-04-23T00:00:00Z",
             ended_at="2026-04-23T00:01:00Z",
         ),
-        SmokeTransportCapture(
+        smoke_capture(
             messages=[
                 load_fixture("l2_book.json"),
                 load_fixture("trades.json"),
@@ -1128,7 +1151,7 @@ def test_smoke_main_campaign_mode_seeds_one_session_campaign_that_can_resume(
         recv_ts_start = 1713818880100 if calls == 1 else 1713818881100
         started_at = "2026-04-23T00:00:00Z" if calls == 1 else "2026-04-23T00:01:00Z"
         ended_at = "2026-04-23T00:01:00Z" if calls == 1 else "2026-04-23T00:02:00Z"
-        return SmokeTransportCapture(
+        return smoke_capture(
             messages=[
                 load_fixture("l2_book.json"),
                 load_fixture("trades.json"),
@@ -1203,7 +1226,7 @@ def test_smoke_main_resume_campaign_continues_existing_summary(
     ) -> SmokeTransportCapture:
         nonlocal resumed_calls
         resumed_calls += 1
-        return SmokeTransportCapture(
+        return smoke_capture(
             messages=[
                 load_fixture("l2_book.json"),
                 load_fixture("trades.json"),
@@ -1317,7 +1340,7 @@ def test_smoke_main_persists_failed_campaign_summary_on_error(
         nonlocal call_count
         call_count += 1
         if call_count == 1:
-            return SmokeTransportCapture(
+            return smoke_capture(
                 messages=[
                     load_fixture("l2_book.json"),
                     load_fixture("trades.json"),
@@ -1380,7 +1403,7 @@ def test_smoke_main_preserves_env_defaults_and_allows_cli_overrides(
         captured["max_runtime_seconds"] = max_runtime_seconds
         captured["ping_interval_seconds"] = ping_interval_seconds
         captured["reconnect_limit"] = reconnect_limit
-        return SmokeTransportCapture(
+        return smoke_capture(
             messages=[
                 load_fixture("l2_book.json"),
                 load_fixture("trades.json"),
@@ -1451,7 +1474,7 @@ def test_smoke_main_keeps_stdout_json_when_negative_latency_is_corrected(
         ping_interval_seconds: int,
         reconnect_limit: int,
     ) -> SmokeTransportCapture:
-        return SmokeTransportCapture(
+        return smoke_capture(
             messages=[
                 load_fixture("l2_book.json"),
                 delayed_trades,

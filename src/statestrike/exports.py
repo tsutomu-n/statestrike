@@ -4,6 +4,7 @@ from contextlib import redirect_stdout
 from datetime import date
 import io
 from pathlib import Path
+from typing import Literal
 
 from hftbacktest import BUY_EVENT, DEPTH_EVENT, EXCH_EVENT, LOCAL_EVENT, SELL_EVENT, TRADE_EVENT
 from hftbacktest.data import correct_event_order, correct_local_timestamp, validate_event_order
@@ -40,6 +41,18 @@ class ExportValidationReport(BaseModel):
 
     nautilus_tables: dict[str, ExportTableValidation]
     hftbacktest: HftbacktestValidation
+    truth_exports: dict[str, "ExportArtifactContract"] = {}
+    corrected_exports: dict[str, "ExportArtifactContract"] = {}
+    correction_applied: tuple[str, ...] = ()
+
+
+class ExportArtifactContract(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    category: Literal["truth", "corrected"]
+    target: str
+    artifact_path: str
+    truth_preserving: bool
     correction_applied: tuple[str, ...] = ()
 
 
@@ -280,6 +293,24 @@ def validate_export_bundle(
     return ExportValidationReport(
         nautilus_tables=nautilus_tables,
         hftbacktest=hftbacktest,
+        truth_exports={
+            "nautilus": ExportArtifactContract(
+                category="truth",
+                target="nautilus",
+                artifact_path=nautilus_dir.as_posix(),
+                truth_preserving=True,
+                correction_applied=(),
+            )
+        },
+        corrected_exports={
+            "hftbacktest": ExportArtifactContract(
+                category="corrected",
+                target="hftbacktest",
+                artifact_path=(hft_dir / f"{symbol.lower()}_market_data.npz").as_posix(),
+                truth_preserving=False,
+                correction_applied=("correct_local_timestamp", "correct_event_order"),
+            )
+        },
         correction_applied=("hftbacktest",),
     )
 

@@ -149,4 +149,12 @@ def test_validate_export_bundle_reports_integrity_stats(tmp_path) -> None:
     assert report.hftbacktest.exchange_ts_monotonic is True
     assert report.hftbacktest.local_ts_monotonic is True
     assert report.hftbacktest.event_codes == (1, 2)
+    assert report.truth_exports["nautilus"].category == "truth"
+    assert report.truth_exports["nautilus"].truth_preserving is True
+    assert report.corrected_exports["hftbacktest"].category == "corrected"
+    assert report.corrected_exports["hftbacktest"].truth_preserving is False
+    assert report.corrected_exports["hftbacktest"].correction_applied == (
+        "correct_local_timestamp",
+        "correct_event_order",
+    )
     assert report.correction_applied == ("hftbacktest",)

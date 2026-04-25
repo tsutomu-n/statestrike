@@ -197,6 +197,7 @@ def run_smoke_batch(
         messages=messages,
         ingress_metadata=ingress_metadata,
         recv_ts_start=recv_ts_start,
+        allow_fixture_fallback=(config.run_mode == "fixture"),
     )
     capture_log_path = capture_log_writer.write_batch(
         trading_date=trading_date,

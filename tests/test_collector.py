@@ -233,6 +233,32 @@ def test_collect_market_batch_uses_ingress_metadata_recv_timestamps_in_order() -
     assert result.normalized_rows["asset_ctx"][0]["recv_ts"] == 1713818880101
 
 
+def test_collect_market_batch_rejects_synthetic_recv_ts_fallback_in_network_mode() -> None:
+    config = CollectorConfig(
+        run_mode="network",
+        allowed_symbols=("BTC",),
+        source_priority=("ws", "info", "s3", "tardis"),
+        market_data_network="mainnet",
+        flush_interval_ms=1000,
+        snapshot_recovery_enabled=True,
+        channels=("trades",),
+        candle_interval=None,
+    )
+
+    with pytest.raises(
+        ValueError,
+        match="ingress_metadata is required for run_mode='network'",
+    ):
+        collect_market_batch(
+            messages=[load_fixture("trades.json")],
+            config=config,
+            capture_session_id="session-network",
+            reconnect_epoch=0,
+            book_epoch=1,
+            recv_ts_start=1713818880100,
+        )
+
+
 def test_collector_config_validates_runtime_backoff_bounds() -> None:
     with pytest.raises(
         ValueError,

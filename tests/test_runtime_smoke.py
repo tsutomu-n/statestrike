@@ -9,6 +9,30 @@ from statestrike.recovery import MessageCaptureContext, MessageIngressMeta
 from statestrike.runtime import RuntimeCapture, collect_public_runtime_capture
 
 
+def runtime_capture(
+    *,
+    messages: list[dict],
+    recv_ts_start: int,
+    ingress_metadata: list[MessageIngressMeta] | tuple[MessageIngressMeta, ...] | None = None,
+    **kwargs,
+) -> RuntimeCapture:
+    resolved_ingress = tuple(ingress_metadata) if ingress_metadata is not None else tuple(
+        MessageIngressMeta(
+            recv_wall_ns=(recv_ts_start + index) * 1_000_000,
+            recv_mono_ns=index,
+            recv_seq=index,
+            connection_id="runtime-test-conn",
+        )
+        for index, _ in enumerate(messages)
+    )
+    return RuntimeCapture(
+        messages=messages,
+        ingress_metadata=resolved_ingress,
+        recv_ts_start=recv_ts_start,
+        **kwargs,
+    )
+
+
 def runtime_config() -> CollectorConfig:
     return CollectorConfig(
         run_mode="network",
@@ -40,7 +64,7 @@ def test_collect_public_runtime_capture_retries_failed_attempt_and_tracks_epoch(
         calls += 1
         if calls == 1:
             raise RuntimeError("synthetic disconnect")
-        return RuntimeCapture(
+        return runtime_capture(
             messages=[{"channel": "trades", "data": {"coin": "BTC"}}],
             recv_ts_start=1713818880100,
             started_at="2026-04-24T00:00:00Z",
@@ -118,7 +142,7 @@ def test_collect_public_runtime_capture_preserves_recovery_message_contexts() ->
         ping_interval_seconds: int,
         reconnect_limit: int,
     ) -> RuntimeCapture:
-        return RuntimeCapture(
+        return runtime_capture(
             messages=[{"channel": "l2Book", "data": {"coin": "BTC"}}],
             message_contexts=[
                 MessageCaptureContext(
@@ -165,7 +189,7 @@ def test_collect_public_runtime_capture_preserves_ingress_metadata() -> None:
         ping_interval_seconds: int,
         reconnect_limit: int,
     ) -> RuntimeCapture:
-        return RuntimeCapture(
+        return runtime_capture(
             messages=[{"channel": "trades", "data": {"coin": "BTC"}}],
             ingress_metadata=[
                 MessageIngressMeta(

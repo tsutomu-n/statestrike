@@ -140,11 +140,16 @@ def resolve_ingress_metadata(
     messages: list[dict[str, Any]],
     ingress_metadata: list[MessageIngressMeta] | tuple[MessageIngressMeta, ...] | None,
     recv_ts_start: int,
+    allow_fixture_fallback: bool,
 ) -> list[MessageIngressMeta]:
     if ingress_metadata:
         if len(ingress_metadata) != len(messages):
             raise ValueError("ingress_metadata length must match messages length")
         return list(ingress_metadata)
+    if not allow_fixture_fallback:
+        raise ValueError(
+            "ingress_metadata is required for run_mode='network'; synthetic recv_ts fallback is fixture-only"
+        )
     return [
         MessageIngressMeta(
             recv_wall_ns=(recv_ts_start + index) * 1_000_000,
