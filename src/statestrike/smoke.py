@@ -975,11 +975,35 @@ def _render_audit_markdown(report: QualityAuditReport) -> str:
         f"- trade_gap_count: {report.trade_gap_count}",
         f"- asset_ctx_gap_count: {report.asset_ctx_gap_count}",
         f"- duplicate_trade_count: {report.duplicate_trade_count}",
+        f"- raw_duplicate_trade_count: {report.raw_duplicate_trade_count}",
+        (
+            "- reconnect_replay_duplicate_trade_count: "
+            f"{report.reconnect_replay_duplicate_trade_count}"
+        ),
+        (
+            "- unexplained_duplicate_trade_count: "
+            f"{report.unexplained_duplicate_trade_count}"
+        ),
         (
             "- non_monotonic_exchange_ts_count: "
             f"{report.non_monotonic_exchange_ts_count}"
         ),
         f"- non_monotonic_recv_ts_count: {report.non_monotonic_recv_ts_count}",
+        (
+            "- exchange_sorted_recv_inversion_count: "
+            f"{report.exchange_sorted_recv_inversion_count}"
+        ),
+        f"- capture_order_integrity: {report.capture_order_integrity}",
+        f"- capture_log_file_count: {report.capture_log_file_count}",
+        f"- capture_log_row_count: {report.capture_log_row_count}",
+        (
+            "- capture_order_missing_recv_timestamp_count: "
+            f"{report.capture_order_missing_recv_timestamp_count}"
+        ),
+        (
+            "- capture_order_recv_seq_non_monotonic_count: "
+            f"{report.capture_order_recv_seq_non_monotonic_count}"
+        ),
         f"- empty_snapshot_count: {report.empty_snapshot_count}",
         "",
     ]

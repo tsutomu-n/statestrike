@@ -148,12 +148,14 @@ def run_backtest_readiness(
         )
         for symbol in requested_symbols
     }
-    (
-        capture_log_file_count,
-        capture_log_row_count,
-        missing_recv_timestamp_count,
-        recv_seq_non_monotonic_count,
-    ) = _inspect_capture_logs(root=root, trading_date=trading_date)
+    capture_log_file_count = quality_report.capture_log_file_count
+    capture_log_row_count = quality_report.capture_log_row_count
+    missing_recv_timestamp_count = (
+        quality_report.capture_order_missing_recv_timestamp_count
+    )
+    recv_seq_non_monotonic_count = (
+        quality_report.capture_order_recv_seq_non_monotonic_count
+    )
     funding_enrichment_missing_count = _count_missing_funding_enrichment(
         root=root,
         trading_date=trading_date,
@@ -199,14 +201,19 @@ def run_backtest_readiness(
         blocking_reasons.append("required_normalized_table_missing")
     if export_artifact_invalid_symbols:
         blocking_reasons.append("required_export_artifact_incomplete")
-    if quality_report.non_monotonic_recv_ts_count > thresholds.max_non_monotonic_recv_ts_count:
-        blocking_reasons.append("non_monotonic_recv_ts_over_threshold")
+    if (
+        quality_report.exchange_sorted_recv_inversion_count
+        > thresholds.max_non_monotonic_recv_ts_count
+    ):
+        warning_reasons.append("exchange_sorted_recv_inversion_observed")
     if max_quarantine_rate > thresholds.quarantine_blocking_rate:
         blocking_reasons.append("quarantine_rate_over_blocking_threshold")
     elif max_quarantine_rate > thresholds.quarantine_warning_rate:
         warning_reasons.append("quarantine_rate_over_warning_threshold")
-    if quality_report.duplicate_trade_count > thresholds.max_duplicate_trade_count:
-        blocking_reasons.append("duplicate_trade_count_over_threshold")
+    if quality_report.unexplained_duplicate_trade_count > thresholds.max_duplicate_trade_count:
+        blocking_reasons.append("unexplained_duplicate_trade_count_over_threshold")
+    elif quality_report.reconnect_replay_duplicate_trade_count > 0:
+        warning_reasons.append("reconnect_replay_duplicate_trade_observed")
     if (
         quality_report.non_recoverable_book_gap_count
         > thresholds.max_non_recoverable_book_gap_count

@@ -99,3 +99,21 @@ def test_enrich_funding_schedule_records_unsupported_dex_without_fallback(tmp_pa
     frame = pd.read_parquet(result.path)
     assert frame.loc[0, "enrichment_kind"] == "unsupported"
     assert frame.loc[0, "unsupported_reason"] == "predictedFundings_first_perp_dex_only"
+
+
+def test_enrich_funding_schedule_records_partial_missing_symbols(tmp_path) -> None:
+    result = enrich_funding_schedule_from_predicted_fundings(
+        root=tmp_path,
+        trading_date=date(2026, 4, 23),
+        symbols=("BTC", "SOL"),
+        predicted_fundings=PREDICTED_FUNDINGS,
+        enrichment_asof_ts=1713819000000,
+    )
+
+    assert result.status == "partial"
+    assert result.enriched_count == 1
+    assert result.missing_symbols == ("SOL",)
+    assert result.path is not None
+    frame = pd.read_parquet(result.path)
+    assert frame["symbol"].tolist() == ["BTC"]
+    assert frame["enrichment_source"].tolist() == ["hyperliquid_predictedFundings"]

@@ -3,9 +3,11 @@ from __future__ import annotations
 import json
 from datetime import date
 from pathlib import Path
+from typing import Literal
 
 import duckdb
 from pydantic import BaseModel, ConfigDict, Field
+import zstandard
 
 from statestrike.paths import build_normalized_path, build_quarantine_path
 from statestrike.storage import _parquet_source
@@ -31,12 +33,21 @@ class QualityAuditReport(BaseModel):
     zero_or_negative_qty_count: int = Field(ge=0)
     asset_ctx_stale_count: int = Field(ge=0)
     duplicate_trade_count: int = Field(ge=0)
+    raw_duplicate_trade_count: int = Field(ge=0)
+    reconnect_replay_duplicate_trade_count: int = Field(ge=0)
+    unexplained_duplicate_trade_count: int = Field(ge=0)
     book_continuity_gap_count: int = Field(ge=0)
     recoverable_book_gap_count: int = Field(ge=0)
     non_recoverable_book_gap_count: int = Field(ge=0)
     book_epoch_switch_count: int = Field(ge=0)
     non_monotonic_exchange_ts_count: int = Field(ge=0)
     non_monotonic_recv_ts_count: int = Field(ge=0)
+    exchange_sorted_recv_inversion_count: int = Field(ge=0)
+    capture_order_integrity: Literal["ok", "broken", "missing"]
+    capture_log_file_count: int = Field(ge=0)
+    capture_log_row_count: int = Field(ge=0)
+    capture_order_missing_recv_timestamp_count: int = Field(ge=0)
+    capture_order_recv_seq_non_monotonic_count: int = Field(ge=0)
     empty_snapshot_count: int = Field(ge=0)
     trade_gap_count: int = Field(ge=0)
     asset_ctx_gap_count: int = Field(ge=0)
@@ -196,7 +207,11 @@ def run_quality_audit(
             ),
             stale_threshold_ms=asset_ctx_stale_threshold_ms,
         )
-        duplicate_trade_count = _count_duplicate_trades(
+        (
+            raw_duplicate_trade_count,
+            reconnect_replay_duplicate_trade_count,
+            unexplained_duplicate_trade_count,
+        ) = _classify_duplicate_trades(
             connection=connection,
             files=_table_files(
                 normalized_root=normalized_root,
@@ -256,7 +271,7 @@ def run_quality_audit(
             )
             for table in ("book_events", "trades", "asset_ctx")
         )
-        non_monotonic_recv_ts_count = sum(
+        exchange_sorted_recv_inversion_count = sum(
             _count_non_monotonic_timestamps(
                 connection=connection,
                 files=_table_files(
@@ -291,6 +306,13 @@ def run_quality_audit(
     book_continuity_gap_count = (
         recoverable_book_gap_count + non_recoverable_book_gap_count
     )
+    (
+        capture_order_integrity,
+        capture_log_file_count,
+        capture_log_row_count,
+        capture_order_missing_recv_timestamp_count,
+        capture_order_recv_seq_non_monotonic_count,
+    ) = _inspect_capture_order(root=normalized_root, trading_date=trading_date)
 
     return QualityAuditReport(
         thresholds=QualityAuditThresholds(
@@ -313,13 +335,26 @@ def run_quality_audit(
         crossed_book_count=crossed_book_count,
         zero_or_negative_qty_count=non_positive_size_count,
         asset_ctx_stale_count=asset_ctx_stale_count,
-        duplicate_trade_count=duplicate_trade_count,
+        duplicate_trade_count=raw_duplicate_trade_count,
+        raw_duplicate_trade_count=raw_duplicate_trade_count,
+        reconnect_replay_duplicate_trade_count=reconnect_replay_duplicate_trade_count,
+        unexplained_duplicate_trade_count=unexplained_duplicate_trade_count,
         book_continuity_gap_count=book_continuity_gap_count,
         recoverable_book_gap_count=recoverable_book_gap_count,
         non_recoverable_book_gap_count=non_recoverable_book_gap_count,
         book_epoch_switch_count=book_epoch_switch_count,
         non_monotonic_exchange_ts_count=non_monotonic_exchange_ts_count,
-        non_monotonic_recv_ts_count=non_monotonic_recv_ts_count,
+        non_monotonic_recv_ts_count=exchange_sorted_recv_inversion_count,
+        exchange_sorted_recv_inversion_count=exchange_sorted_recv_inversion_count,
+        capture_order_integrity=capture_order_integrity,
+        capture_log_file_count=capture_log_file_count,
+        capture_log_row_count=capture_log_row_count,
+        capture_order_missing_recv_timestamp_count=(
+            capture_order_missing_recv_timestamp_count
+        ),
+        capture_order_recv_seq_non_monotonic_count=(
+            capture_order_recv_seq_non_monotonic_count
+        ),
         empty_snapshot_count=empty_snapshot_count,
         trade_gap_count=trade_gap_count,
         asset_ctx_gap_count=asset_ctx_gap_count,
@@ -541,26 +576,42 @@ def _count_stale_asset_ctx(
     )
 
 
-def _count_duplicate_trades(
+def _classify_duplicate_trades(
     *,
     connection: duckdb.DuckDBPyConnection,
     files: list[Path],
-) -> int:
+) -> tuple[int, int, int]:
     if not files:
-        return 0
+        return (0, 0, 0)
     source = _parquet_source(files)
-    return int(
-        connection.execute(
-            f"""
-            SELECT COALESCE(SUM(duplicate_count - 1), 0)
-            FROM (
-                SELECT dedup_hash, COUNT(*) AS duplicate_count
-                FROM {source}
-                GROUP BY 1
-                HAVING COUNT(*) > 1
-            )
-            """
-        ).fetchone()[0]
+    rows = connection.execute(
+        f"""
+        SELECT
+            dedup_hash,
+            COUNT(*) AS duplicate_count,
+            COUNT(DISTINCT reconnect_epoch) AS reconnect_epoch_count
+        FROM {source}
+        GROUP BY 1
+        HAVING COUNT(*) > 1
+        """
+    ).fetchall()
+    raw_duplicate_count = 0
+    reconnect_replay_duplicate_count = 0
+    unexplained_duplicate_count = 0
+    for _, duplicate_count, reconnect_epoch_count in rows:
+        duplicate_excess = int(duplicate_count) - 1
+        raw_duplicate_count += duplicate_excess
+        # A duplicate spanning reconnect epochs is treated as replay explainable:
+        # the venue/runtime may replay recent trades after reconnect. Same-epoch
+        # duplicates remain unexplained and can block readiness.
+        if int(reconnect_epoch_count) > 1:
+            reconnect_replay_duplicate_count += duplicate_excess
+        else:
+            unexplained_duplicate_count += duplicate_excess
+    return (
+        raw_duplicate_count,
+        reconnect_replay_duplicate_count,
+        unexplained_duplicate_count,
     )
 
 
@@ -762,6 +813,51 @@ def _count_empty_snapshots(
               AND (n_bids = 0 OR n_asks = 0)
             """
         ).fetchone()[0]
+    )
+
+
+def _inspect_capture_order(
+    *,
+    root: Path,
+    trading_date: date,
+) -> tuple[Literal["ok", "broken", "missing"], int, int, int, int]:
+    capture_root = root / "capture_log" / f"date={trading_date.isoformat()}"
+    files = sorted(capture_root.glob("session=*/capture-log*.jsonl.zst"))
+    file_count = len(files)
+    if file_count == 0:
+        return ("missing", 0, 0, 0, 0)
+    row_count = 0
+    missing_recv_timestamp_count = 0
+    recv_seq_non_monotonic_count = 0
+    for path in files:
+        previous_recv_seq: int | None = None
+        with zstandard.open(path, "rt", encoding="utf-8") as handle:
+            for line in handle:
+                row_count += 1
+                payload = json.loads(line)
+                ingress = payload.get("ingress", {})
+                recv_wall_ns = ingress.get("recv_wall_ns")
+                recv_seq = ingress.get("recv_seq")
+                if recv_wall_ns is None:
+                    missing_recv_timestamp_count += 1
+                if recv_seq is None:
+                    recv_seq_non_monotonic_count += 1
+                    continue
+                recv_seq_value = int(recv_seq)
+                if previous_recv_seq is not None and recv_seq_value <= previous_recv_seq:
+                    recv_seq_non_monotonic_count += 1
+                previous_recv_seq = recv_seq_value
+    integrity: Literal["ok", "broken"] = (
+        "broken"
+        if missing_recv_timestamp_count > 0 or recv_seq_non_monotonic_count > 0
+        else "ok"
+    )
+    return (
+        integrity,
+        file_count,
+        row_count,
+        missing_recv_timestamp_count,
+        recv_seq_non_monotonic_count,
     )
 
 

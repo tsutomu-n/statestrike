@@ -313,8 +313,13 @@ def test_quality_audit_counts_gap_and_duplicate_metrics(tmp_path) -> None:
     assert report.non_recoverable_book_gap_count == 1
     assert report.book_continuity_gap_count == 2
     assert report.duplicate_trade_count == 1
+    assert report.raw_duplicate_trade_count == 1
+    assert report.reconnect_replay_duplicate_trade_count == 0
+    assert report.unexplained_duplicate_trade_count == 1
     assert report.non_monotonic_exchange_ts_count >= 1
     assert report.non_monotonic_recv_ts_count >= 1
+    assert report.exchange_sorted_recv_inversion_count >= 1
+    assert report.capture_order_integrity == "missing"
     assert report.empty_snapshot_count == 1
 
 

@@ -13,6 +13,7 @@ from statestrike.readiness import (
     _export_contract_is_valid,
     run_backtest_readiness,
 )
+from statestrike.recovery import MessageCaptureContext, MessageIngressMeta
 from statestrike.smoke import run_smoke_batch
 from statestrike.storage import _read_parquet_frame, _write_parquet_frame
 
@@ -382,3 +383,143 @@ def test_backtest_readiness_blocks_when_funding_source_dex_is_unsupported(tmp_pa
 
     assert report.status == "blocked"
     assert "funding_source_unsupported_for_dex" in report.blocking_reasons
+
+
+def test_backtest_readiness_warns_but_does_not_block_exchange_sorted_recv_inversion(
+    tmp_path,
+) -> None:
+    earlier_exchange_later_recv = copy.deepcopy(load_fixture("trades.json"))
+    earlier_exchange_later_recv["data"] = [earlier_exchange_later_recv["data"][0]]
+    earlier_exchange_later_recv["data"][0]["time"] = 1713818880000
+    earlier_exchange_later_recv["data"][0]["tid"] = 9001
+    later_exchange_earlier_recv = copy.deepcopy(load_fixture("trades.json"))
+    later_exchange_earlier_recv["data"] = [later_exchange_earlier_recv["data"][1]]
+    later_exchange_earlier_recv["data"][0]["time"] = 1713818881000
+    later_exchange_earlier_recv["data"][0]["tid"] = 9002
+
+    run_smoke_batch(
+        root=tmp_path,
+        trading_date=date(2026, 4, 23),
+        messages=[
+            load_fixture("l2_book.json"),
+            earlier_exchange_later_recv,
+            later_exchange_earlier_recv,
+            load_fixture("active_asset_ctx.json"),
+        ],
+        ingress_metadata=[
+            # Capture order is intact, but exchange-time sorting will expose a
+            # receive timestamp inversion between the two trades.
+            _ingress(recv_wall_ns=1713818880000000000, recv_seq=0),
+            _ingress(recv_wall_ns=1713818882000000000, recv_seq=1),
+            _ingress(recv_wall_ns=1713818881000000000, recv_seq=2),
+            _ingress(recv_wall_ns=1713818883000000000, recv_seq=3),
+        ],
+        config=readiness_config(),
+        capture_session_id="session-ready-recv-inversion",
+        batch_id="0001",
+        recv_ts_start=1713818880100,
+    )
+    enrich_funding_sidecar(tmp_path, trading_date=date(2026, 4, 23))
+
+    report = run_backtest_readiness(
+        root=tmp_path,
+        trading_date=date(2026, 4, 23),
+        symbols=("BTC",),
+        profile="substrate_ready",
+    )
+
+    assert report.quality_report.capture_order_integrity == "ok"
+    assert report.quality_report.exchange_sorted_recv_inversion_count == 1
+    assert report.status == "warning"
+    assert "exchange_sorted_recv_inversion_observed" in report.warning_reasons
+    assert "non_monotonic_recv_ts_over_threshold" not in report.blocking_reasons
+
+
+def test_backtest_readiness_does_not_block_reconnect_replay_duplicates(
+    tmp_path,
+) -> None:
+    first_trades = copy.deepcopy(load_fixture("trades.json"))
+    replayed_trades = copy.deepcopy(load_fixture("trades.json"))
+
+    run_smoke_batch(
+        root=tmp_path,
+        trading_date=date(2026, 4, 23),
+        messages=[
+            load_fixture("l2_book.json"),
+            first_trades,
+            replayed_trades,
+            load_fixture("active_asset_ctx.json"),
+        ],
+        message_contexts=[
+            MessageCaptureContext(reconnect_epoch=0, book_epoch=1, book_event_kind="snapshot"),
+            MessageCaptureContext(reconnect_epoch=0, book_epoch=1),
+            MessageCaptureContext(reconnect_epoch=1, book_epoch=2, continuity_status="recovered"),
+            MessageCaptureContext(reconnect_epoch=1, book_epoch=2, continuity_status="recovered"),
+        ],
+        config=readiness_config(),
+        capture_session_id="session-ready-reconnect-replay-duplicates",
+        batch_id="0001",
+        recv_ts_start=1713818880100,
+        reconnect_epoch=1,
+        book_epoch=2,
+        manifest_reconnect_count=1,
+        gap_flags=("ws_reconnect",),
+    )
+    enrich_funding_sidecar(tmp_path, trading_date=date(2026, 4, 23))
+
+    report = run_backtest_readiness(
+        root=tmp_path,
+        trading_date=date(2026, 4, 23),
+        symbols=("BTC",),
+        profile="substrate_ready",
+    )
+
+    assert report.quality_report.raw_duplicate_trade_count == 2
+    assert report.quality_report.reconnect_replay_duplicate_trade_count == 2
+    assert report.quality_report.unexplained_duplicate_trade_count == 0
+    assert report.status == "warning"
+    assert "reconnect_replay_duplicate_trade_observed" in report.warning_reasons
+    assert "duplicate_trade_count_over_threshold" not in report.blocking_reasons
+
+
+def test_backtest_readiness_blocks_unexplained_duplicates(tmp_path) -> None:
+    first_trades = copy.deepcopy(load_fixture("trades.json"))
+    duplicated_trades = copy.deepcopy(load_fixture("trades.json"))
+
+    run_smoke_batch(
+        root=tmp_path,
+        trading_date=date(2026, 4, 23),
+        messages=[
+            load_fixture("l2_book.json"),
+            first_trades,
+            duplicated_trades,
+            load_fixture("active_asset_ctx.json"),
+        ],
+        config=readiness_config(),
+        capture_session_id="session-ready-unexplained-duplicates",
+        batch_id="0001",
+        recv_ts_start=1713818880100,
+    )
+    enrich_funding_sidecar(tmp_path, trading_date=date(2026, 4, 23))
+
+    report = run_backtest_readiness(
+        root=tmp_path,
+        trading_date=date(2026, 4, 23),
+        symbols=("BTC",),
+        profile="substrate_ready",
+    )
+
+    assert report.quality_report.raw_duplicate_trade_count == 2
+    assert report.quality_report.reconnect_replay_duplicate_trade_count == 0
+    assert report.quality_report.unexplained_duplicate_trade_count == 2
+    assert report.status == "blocked"
+    assert "unexplained_duplicate_trade_count_over_threshold" in report.blocking_reasons
+
+
+def _ingress(*, recv_wall_ns: int, recv_seq: int) -> MessageIngressMeta:
+    return MessageIngressMeta(
+        recv_wall_ns=recv_wall_ns,
+        recv_mono_ns=recv_seq,
+        recv_seq=recv_seq,
+        connection_id="test-conn",
+    )

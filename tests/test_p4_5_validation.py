@@ -132,7 +132,7 @@ def test_p4_5_fault_injection_explains_reconnect_gap_ordering_and_funding(
     assert readiness.quality_report.non_recoverable_book_gap_count == 1
     assert readiness.status == "blocked"
     assert "recv_seq_not_monotonic" in readiness.blocking_reasons
-    assert "duplicate_trade_count_over_threshold" in readiness.blocking_reasons
+    assert "unexplained_duplicate_trade_count_over_threshold" in readiness.blocking_reasons
     assert "non_recoverable_book_gap_count_over_threshold" in readiness.blocking_reasons
     assert "funding_enrichment_incomplete" in readiness.blocking_reasons
 
