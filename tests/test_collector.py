@@ -247,3 +247,32 @@ def test_collector_config_validates_runtime_backoff_bounds() -> None:
             reconnect_backoff_max_ms=1_000,
             snapshot_recovery_enabled=True,
         )
+
+
+def test_collector_config_rejects_ws_override_in_fixture_mode() -> None:
+    with pytest.raises(ValueError, match="ws_url_override requires run_mode='network'"):
+        CollectorConfig(
+            run_mode="fixture",
+            ws_url_override="wss://example.invalid/ws",
+            allowed_symbols=("BTC",),
+            source_priority=("ws", "info", "s3", "tardis"),
+            market_data_network="mainnet",
+            flush_interval_ms=1000,
+            snapshot_recovery_enabled=True,
+        )
+
+
+def test_collector_config_rejects_unimplemented_message_rate_guard() -> None:
+    with pytest.raises(
+        ValueError,
+        match="max_messages_per_minute_guard is reserved but not implemented yet",
+    ):
+        CollectorConfig(
+            run_mode="network",
+            allowed_symbols=("BTC",),
+            source_priority=("ws", "info", "s3", "tardis"),
+            market_data_network="mainnet",
+            flush_interval_ms=1000,
+            snapshot_recovery_enabled=True,
+            max_messages_per_minute_guard=120,
+        )

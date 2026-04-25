@@ -176,3 +176,26 @@ def test_settings_reject_inverted_reconnect_backoff_bounds() -> None:
             reconnect_backoff_initial_ms=5_000,
             reconnect_backoff_max_ms=1_000,
         )
+
+
+def test_settings_reject_unimplemented_message_rate_guard_when_building_smoke_config(
+    tmp_path: Path,
+) -> None:
+    env_file = tmp_path / "phase15-guard.env"
+    env_file.write_text(
+        "\n".join(
+            [
+                "STATESTRIKE_ALLOWED_SYMBOLS=BTC",
+                "STATESTRIKE_MAX_MESSAGES_PER_MINUTE_GUARD=120",
+            ]
+        ),
+        encoding="utf-8",
+    )
+
+    settings = Settings(_env_file=env_file)
+
+    with pytest.raises(
+        ValueError,
+        match="max_messages_per_minute_guard is reserved but not implemented yet",
+    ):
+        settings.build_smoke_collector_config()

@@ -39,18 +39,24 @@ CandleInterval = Literal[
 class CollectorConfig(BaseModel):
     model_config = ConfigDict(frozen=True)
 
+    # `fixture` is for local replay/normalization without live transport.
+    # `network` is for runtime/smoke capture that opens a websocket connection.
     run_mode: Literal["fixture", "network"] = "fixture"
+    # Network-only override for websocket endpoint selection.
     ws_url_override: str | None = None
     allowed_symbols: tuple[str, ...]
     source_priority: tuple[Literal["ws", "info", "s3", "tardis"], ...]
     market_data_network: Literal["mainnet", "testnet"]
     flush_interval_ms: int
+    # Network-only websocket heartbeat timeout used by pybotters.
     heartbeat_timeout_ms: int = 30_000
+    # Network-only reconnect backoff bounds for runtime capture retries.
     reconnect_backoff_initial_ms: int = 1_000
     reconnect_backoff_max_ms: int = 30_000
     snapshot_recovery_enabled: bool
     book_snapshot_refresh_on_reconnect: bool = True
     max_subscriptions_per_connection: int = 64
+    # Reserved for future online throttling. Explicitly unsupported for now.
     max_messages_per_minute_guard: int | None = None
     channels: tuple[CollectorChannel, ...] = (
         "l2Book",
@@ -61,6 +67,8 @@ class CollectorConfig(BaseModel):
 
     @model_validator(mode="after")
     def validate_channel_options(self) -> "CollectorConfig":
+        if self.run_mode == "fixture" and self.ws_url_override is not None:
+            raise ValueError("ws_url_override requires run_mode='network'")
         if self.candle_interval and "candle" not in self.channels:
             raise ValueError("candle_interval requires the candle channel")
         if "candle" in self.channels and self.candle_interval is None:
@@ -80,6 +88,10 @@ class CollectorConfig(BaseModel):
             and self.max_messages_per_minute_guard <= 0
         ):
             raise ValueError("max_messages_per_minute_guard must be positive")
+        if self.max_messages_per_minute_guard is not None:
+            raise ValueError(
+                "max_messages_per_minute_guard is reserved but not implemented yet"
+            )
         return self
 
 
