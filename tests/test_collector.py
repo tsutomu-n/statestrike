@@ -226,11 +226,20 @@ def test_collect_market_batch_uses_ingress_metadata_recv_timestamps_in_order() -
     )
 
     assert result.normalized_rows["book_events"][0]["recv_ts"] == 1713818880102
+    assert result.normalized_rows["book_events"][0]["recv_ts_ns"] == 1713818880102000000
+    assert result.normalized_rows["book_events"][0]["recv_seq"] == 9
     assert [row["recv_ts"] for row in result.normalized_rows["trades"]] == [
         1713818880100,
         1713818880100,
     ]
+    assert [row["recv_ts_ns"] for row in result.normalized_rows["trades"]] == [
+        1713818880100000000,
+        1713818880100000000,
+    ]
+    assert [row["recv_seq"] for row in result.normalized_rows["trades"]] == [7, 7]
     assert result.normalized_rows["asset_ctx"][0]["recv_ts"] == 1713818880101
+    assert result.normalized_rows["asset_ctx"][0]["recv_ts_ns"] == 1713818880101000000
+    assert result.normalized_rows["asset_ctx"][0]["recv_seq"] == 8
 
 
 def test_collect_market_batch_rejects_synthetic_recv_ts_fallback_in_network_mode() -> None:

@@ -120,6 +120,9 @@ def export_nautilus_catalog(
                 "symbol",
                 "exchange_ts",
                 "recv_ts",
+                "recv_ts_ns",
+                "recv_seq",
+                "ts_init_ns",
                 "price",
                 "size",
                 "side",
@@ -132,8 +135,9 @@ def export_nautilus_catalog(
         )
     else:
         trade_ticks.insert(0, "instrument_id", instrument_id)
+        trade_ticks = _with_ts_init_ns(trade_ticks)
         trade_ticks = trade_ticks.sort_values(
-            by=["exchange_ts", "recv_ts", "trade_event_id"]
+            by=["exchange_ts", "recv_ts_ns", "recv_seq", "trade_event_id"]
         ).reset_index(drop=True)
 
     book_levels_export = _join_book_levels(
@@ -141,6 +145,8 @@ def export_nautilus_catalog(
         book_levels=book_levels,
         instrument_id=instrument_id,
     )
+    if not book_levels_export.empty:
+        book_levels_export = _with_ts_init_ns(book_levels_export)
     asset_ctx_export = asset_ctx.copy()
     if asset_ctx_export.empty:
         asset_ctx_export = pd.DataFrame(
@@ -151,6 +157,9 @@ def export_nautilus_catalog(
                 "exchange_ts",
                 "exchange_ts_quality",
                 "recv_ts",
+                "recv_ts_ns",
+                "recv_seq",
+                "ts_init_ns",
                 "mark_px",
                 "oracle_px",
                 "funding_rate",
@@ -167,8 +176,15 @@ def export_nautilus_catalog(
         )
     else:
         asset_ctx_export.insert(0, "instrument_id", instrument_id)
+        asset_ctx_export = _with_ts_init_ns(asset_ctx_export)
         asset_ctx_export = asset_ctx_export.sort_values(
-            by=["exchange_ts_quality", "exchange_ts", "recv_ts", "asset_ctx_event_id"],
+            by=[
+                "exchange_ts_quality",
+                "exchange_ts",
+                "recv_ts_ns",
+                "recv_seq",
+                "asset_ctx_event_id",
+            ],
             na_position="last",
         ).reset_index(drop=True)
 
@@ -332,6 +348,9 @@ def _join_book_levels(
                 "symbol",
                 "exchange_ts",
                 "recv_ts",
+                "recv_ts_ns",
+                "recv_seq",
+                "ts_init_ns",
                 "event_kind",
                 "source",
                 "raw_msg_hash",
@@ -349,6 +368,8 @@ def _join_book_levels(
         "symbol",
         "exchange_ts",
         "recv_ts",
+        "recv_ts_ns",
+        "recv_seq",
         "source",
         "raw_msg_hash",
         "dedup_hash",
@@ -363,7 +384,14 @@ def _join_book_levels(
                 joined = joined.merge(event_kinds, on="book_event_id", how="left")
         joined.insert(0, "instrument_id", instrument_id)
         return joined.sort_values(
-            by=["exchange_ts", "recv_ts", "book_event_id", "side", "level_idx"]
+            by=[
+                "exchange_ts",
+                "recv_ts_ns",
+                "recv_seq",
+                "book_event_id",
+                "side",
+                "level_idx",
+            ]
         ).reset_index(drop=True)
     if book_events.empty:
         joined = book_levels.copy()
@@ -376,6 +404,8 @@ def _join_book_levels(
                 "symbol",
                 "exchange_ts",
                 "recv_ts",
+                "recv_ts_ns",
+                "recv_seq",
                 "event_kind",
                 "source",
             ]
@@ -385,8 +415,29 @@ def _join_book_levels(
     )
     joined.insert(0, "instrument_id", instrument_id)
     return joined.sort_values(
-        by=["exchange_ts", "recv_ts", "book_event_id", "side", "level_idx"]
+        by=[
+            "exchange_ts",
+            "recv_ts_ns",
+            "recv_seq",
+            "book_event_id",
+            "side",
+            "level_idx",
+        ]
     ).reset_index(drop=True)
+
+
+def _with_ts_init_ns(frame: pd.DataFrame) -> pd.DataFrame:
+    if "recv_ts_ns" not in frame.columns:
+        raise ValueError("recv_ts_ns is required for truth export ts_init_ns")
+    result = frame.copy()
+    if "ts_init_ns" not in result.columns:
+        insert_at = (
+            result.columns.get_loc("recv_seq") + 1
+            if "recv_seq" in result
+            else len(result.columns)
+        )
+        result.insert(insert_at, "ts_init_ns", result["recv_ts_ns"])
+    return result
 
 
 def _to_hftbacktest_rows(
@@ -408,7 +459,8 @@ def _to_hftbacktest_rows(
     rows = np.zeros(len(frame), dtype=event_dtype)
     rows["ev"] = side_flags | np.uint64(event_code)
     rows["exch_ts"] = frame["exchange_ts"].to_numpy(dtype=np.int64)
-    rows["local_ts"] = frame["recv_ts"].to_numpy(dtype=np.int64)
+    local_ts_column = "recv_ts_ns" if "recv_ts_ns" in frame.columns else "recv_ts"
+    rows["local_ts"] = frame[local_ts_column].to_numpy(dtype=np.int64)
     rows["px"] = frame[price_column].to_numpy(dtype=np.float64)
     rows["qty"] = frame[size_column].to_numpy(dtype=np.float64)
     return rows

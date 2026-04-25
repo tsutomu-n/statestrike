@@ -83,6 +83,71 @@ def test_export_nautilus_catalog_writes_compare_ready_bundle(tmp_path) -> None:
     instrument_df = pd.read_parquet(export_dir / "instrument.parquet")
     assert instrument_df.loc[0, "instrument_id"] == "BTC-USD-PERP.HYPERLIQUID"
 
+    trade_ticks = pd.read_parquet(export_dir / "trade_ticks.parquet")
+    assert "ts_init_ns" in trade_ticks.columns
+    assert trade_ticks["ts_init_ns"].tolist() == trade_ticks["recv_ts_ns"].tolist()
+
+
+def test_export_nautilus_catalog_sorts_same_ms_rows_by_ns_and_sequence(tmp_path) -> None:
+    trading_date = date(2026, 4, 22)
+    writer = NormalizedWriter(root=tmp_path)
+    rows = [
+        {
+            "trade_event_id": "trade-late",
+            "native_tid": "2",
+            "symbol": "BTC",
+            "exchange_ts": 1713818880000,
+            "recv_ts": 1713818880100,
+            "recv_ts_ns": 1713818880100000200,
+            "recv_seq": 2,
+            "price": 100.0,
+            "size": 1.0,
+            "side": "buy",
+            "capture_session_id": "session-1",
+            "reconnect_epoch": 0,
+            "source": "ws",
+            "raw_msg_hash": "raw-late",
+            "dedup_hash": "dedup-late",
+        },
+        {
+            "trade_event_id": "trade-early",
+            "native_tid": "1",
+            "symbol": "BTC",
+            "exchange_ts": 1713818880000,
+            "recv_ts": 1713818880100,
+            "recv_ts_ns": 1713818880100000100,
+            "recv_seq": 1,
+            "price": 99.0,
+            "size": 1.0,
+            "side": "sell",
+            "capture_session_id": "session-1",
+            "reconnect_epoch": 0,
+            "source": "ws",
+            "raw_msg_hash": "raw-early",
+            "dedup_hash": "dedup-early",
+        },
+    ]
+    writer.write_rows(
+        table="trades",
+        trading_date=trading_date,
+        symbol="BTC",
+        rows=rows,
+    )
+
+    export_dir = export_nautilus_catalog(
+        normalized_root=tmp_path,
+        export_root=tmp_path,
+        trading_date=trading_date,
+        symbol="BTC",
+    )
+
+    trade_ticks = pd.read_parquet(export_dir / "trade_ticks.parquet")
+    assert trade_ticks["trade_event_id"].tolist() == ["trade-early", "trade-late"]
+    assert trade_ticks["ts_init_ns"].tolist() == [
+        1713818880100000100,
+        1713818880100000200,
+    ]
+
 
 def test_export_hftbacktest_npz_writes_current_structured_array(tmp_path) -> None:
     root, trading_date = _write_valid_normalized_rows(tmp_path)

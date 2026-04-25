@@ -26,6 +26,8 @@ def test_normalize_l2_book_fixture_into_event_and_levels() -> None:
         reconnect_epoch=0,
         book_epoch=1,
         recv_ts=1713818880100,
+        recv_ts_ns=1713818880100000000,
+        recv_seq=0,
         source="ws",
     )
 
@@ -49,6 +51,8 @@ def test_normalize_l2_book_marks_recovery_snapshot_after_reconnect() -> None:
         reconnect_epoch=2,
         book_epoch=3,
         recv_ts=1713818880100,
+        recv_ts_ns=1713818880100000000,
+        recv_seq=0,
         source="ws",
         event_kind="recovery_snapshot",
         continuity_status="recovered",
@@ -76,6 +80,8 @@ def test_normalize_trades_fixture_into_trade_rows() -> None:
         capture_session_id="session-1",
         reconnect_epoch=1,
         recv_ts=1713818880101,
+        recv_ts_ns=1713818880101000000,
+        recv_seq=1,
         source="ws",
     )
 
@@ -96,6 +102,8 @@ def test_normalize_asset_context_fixture_into_row() -> None:
         capture_session_id="session-1",
         reconnect_epoch=4,
         recv_ts=1713818880102,
+        recv_ts_ns=1713818880102000000,
+        recv_seq=2,
         source="ws",
     )
 

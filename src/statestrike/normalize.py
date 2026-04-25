@@ -13,6 +13,8 @@ def normalize_l2_book(
     reconnect_epoch: int,
     book_epoch: int,
     recv_ts: int,
+    recv_ts_ns: int,
+    recv_seq: int,
     source: str,
     event_kind: str | None = None,
     continuity_status: str = "continuous",
@@ -39,6 +41,8 @@ def normalize_l2_book(
         "symbol": coin,
         "exchange_ts": int(data["time"]),
         "recv_ts": recv_ts,
+        "recv_ts_ns": recv_ts_ns,
+        "recv_seq": recv_seq,
         "event_kind": event_kind
         or ("recovery_snapshot" if reconnect_epoch > 0 or book_epoch > 1 else "snapshot"),
         "continuity_status": continuity_status,
@@ -71,6 +75,8 @@ def normalize_l2_book(
                     "symbol": coin,
                     "exchange_ts": int(data["time"]),
                     "recv_ts": recv_ts,
+                    "recv_ts_ns": recv_ts_ns,
+                    "recv_seq": recv_seq,
                     "source": source,
                     "raw_msg_hash": raw_msg_hash,
                     "dedup_hash": level_dedup_hash,
@@ -89,6 +95,8 @@ def normalize_trades(
     capture_session_id: str,
     reconnect_epoch: int = 0,
     recv_ts: int,
+    recv_ts_ns: int,
+    recv_seq: int,
     source: str,
 ) -> list[dict[str, Any]]:
     raw_msg_hash = canonical_hash(message)
@@ -124,6 +132,8 @@ def normalize_trades(
                 "symbol": symbol,
                 "exchange_ts": int(trade["time"]),
                 "recv_ts": recv_ts,
+                "recv_ts_ns": recv_ts_ns,
+                "recv_seq": recv_seq,
                 "price": float(trade["px"]),
                 "size": float(trade["sz"]),
                 "side": "buy" if trade["side"] == "B" else "sell",
@@ -143,6 +153,8 @@ def normalize_active_asset_ctx(
     capture_session_id: str,
     reconnect_epoch: int = 0,
     recv_ts: int,
+    recv_ts_ns: int,
+    recv_seq: int,
     source: str,
 ) -> dict[str, Any]:
     raw_msg_hash = canonical_hash(message)
@@ -162,6 +174,8 @@ def normalize_active_asset_ctx(
         exchange_ts=int(exchange_ts) if exchange_ts is not None else None,
         exchange_ts_quality=exchange_ts_quality,
         recv_ts=recv_ts,
+        recv_ts_ns=recv_ts_ns,
+        recv_seq=recv_seq,
         mark_px=float(ctx["markPx"]),
         oracle_px=float(ctx["oraclePx"]),
         funding_rate=float(ctx["funding"]),

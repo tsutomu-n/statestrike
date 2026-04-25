@@ -7,7 +7,11 @@ import duckdb
 from pydantic import BaseModel, ConfigDict, Field
 
 from statestrike.paths import build_normalized_path
-from statestrike.readiness import BacktestReadinessReport, run_backtest_readiness
+from statestrike.readiness import (
+    BacktestReadinessReport,
+    ReadinessProfileName,
+    run_backtest_readiness,
+)
 from statestrike.storage import _parquet_source
 
 
@@ -55,6 +59,8 @@ def run_sanity_single_trade_roundtrip(
         root=root,
         trading_date=trading_date,
         symbols=(symbol,),
+        profile="nautilus_baseline_ready",
+        allow_warning=True,
     )
     trades = _read_trade_frame(
         root=root,
@@ -88,6 +94,8 @@ def run_baseline_simple_momentum(
         root=root,
         trading_date=trading_date,
         symbols=(symbol,),
+        profile="nautilus_baseline_ready",
+        allow_warning=True,
     )
     trades = _read_trade_frame(
         root=root,
@@ -125,13 +133,17 @@ def _require_readiness(
     root: Path,
     trading_date: date,
     symbols: tuple[str, ...],
+    profile: ReadinessProfileName = "funding_aware_ready",
+    allow_warning: bool = False,
 ) -> BacktestReadinessReport:
     readiness_report = run_backtest_readiness(
         root=root,
         trading_date=trading_date,
         symbols=symbols,
+        profile=profile,
     )
-    if readiness_report.status != "ready":
+    allowed_statuses = {"ready", "warning"} if allow_warning else {"ready"}
+    if readiness_report.status not in allowed_statuses:
         raise ValueError(
             f"backtest dataset not ready: {', '.join(readiness_report.blocking_reasons or readiness_report.warning_reasons)}"
         )
@@ -160,7 +172,7 @@ def _read_trade_frame(
             f"""
             SELECT *
             FROM {source}
-            ORDER BY exchange_ts, recv_ts, trade_event_id
+            ORDER BY exchange_ts, recv_ts_ns, recv_seq, trade_event_id
             """
         ).fetchdf()
     finally:

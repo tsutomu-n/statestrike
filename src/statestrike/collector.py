@@ -172,6 +172,8 @@ def collect_market_batch(
                 reconnect_epoch=message_context.reconnect_epoch,
                 book_epoch=message_context.book_epoch,
                 recv_ts=recv_ts,
+                recv_ts_ns=ingress_meta.recv_wall_ns,
+                recv_seq=ingress_meta.recv_seq,
                 source="ws",
                 event_kind=message_context.book_event_kind,
                 continuity_status=message_context.continuity_status,
@@ -187,6 +189,8 @@ def collect_market_batch(
                     capture_session_id=capture_session_id,
                     reconnect_epoch=message_context.reconnect_epoch,
                     recv_ts=recv_ts,
+                    recv_ts_ns=ingress_meta.recv_wall_ns,
+                    recv_seq=ingress_meta.recv_seq,
                     source="ws",
                 )
             )
@@ -197,6 +201,8 @@ def collect_market_batch(
                     capture_session_id=capture_session_id,
                     reconnect_epoch=message_context.reconnect_epoch,
                     recv_ts=recv_ts,
+                    recv_ts_ns=ingress_meta.recv_wall_ns,
+                    recv_seq=ingress_meta.recv_seq,
                     source="ws",
                 )
             )

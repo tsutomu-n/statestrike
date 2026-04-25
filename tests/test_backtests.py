@@ -136,6 +136,43 @@ def test_baseline_simple_momentum_computes_positive_pnl_from_fixture_trend(tmp_p
     assert backtest.pnl == pytest.approx(0.5)
 
 
+def test_baseline_simple_momentum_uses_profile_that_warns_on_missing_funding(tmp_path) -> None:
+    rising_trades = copy.deepcopy(load_fixture("trades.json"))
+    rising_trades["data"].append(
+        {
+            "coin": "BTC",
+            "side": "B",
+            "px": "100.75",
+            "sz": "0.2",
+            "time": 1713818880070,
+            "tid": 3,
+        }
+    )
+    run_smoke_batch(
+        root=tmp_path,
+        trading_date=date(2026, 4, 24),
+        messages=[
+            load_fixture("l2_book.json"),
+            rising_trades,
+            load_fixture("active_asset_ctx.json"),
+        ],
+        config=backtest_config(),
+        capture_session_id="session-backtest-momentum-warning",
+        batch_id="0001",
+        recv_ts_start=1713818880100,
+    )
+
+    backtest = run_baseline_simple_momentum(
+        root=tmp_path,
+        trading_date=date(2026, 4, 24),
+        symbol="BTC",
+    )
+
+    assert backtest.status == "completed"
+    assert backtest.readiness_report.status == "warning"
+    assert "funding_enrichment_incomplete" in backtest.readiness_report.warning_reasons
+
+
 def test_backtests_block_when_readiness_gate_is_not_ready(tmp_path) -> None:
     run_smoke_batch(
         root=tmp_path,

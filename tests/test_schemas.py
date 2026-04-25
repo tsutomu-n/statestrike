@@ -20,6 +20,8 @@ def test_schema_gate_accepts_valid_trade_rows() -> None:
         capture_session_id="session-1",
         reconnect_epoch=0,
         recv_ts=1713818880101,
+        recv_ts_ns=1713818880101000000,
+        recv_seq=1,
         source="ws",
     )
 
@@ -35,6 +37,8 @@ def test_schema_gate_splits_invalid_trade_rows_to_quarantine() -> None:
         capture_session_id="session-1",
         reconnect_epoch=0,
         recv_ts=1713818880101,
+        recv_ts_ns=1713818880101000000,
+        recv_seq=1,
         source="ws",
     )
     invalid = dict(rows[0])
@@ -56,6 +60,8 @@ def test_schema_gate_vectorizes_and_splits_multiple_invalid_rows_by_index() -> N
         capture_session_id="session-1",
         reconnect_epoch=0,
         recv_ts=1713818880101,
+        recv_ts_ns=1713818880101000000,
+        recv_seq=1,
         source="ws",
     )
     invalid_price_and_side = dict(rows[0])
@@ -85,6 +91,8 @@ def test_schema_gate_accepts_asset_context_rows_with_missing_exchange_timestamp(
         "exchange_ts": None,
         "exchange_ts_quality": "missing",
         "recv_ts": 1713818880102,
+        "recv_ts_ns": 1713818880102000000,
+        "recv_seq": 2,
         "mark_px": 100.3,
         "oracle_px": 100.0,
         "funding_rate": 0.0001,

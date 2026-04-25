@@ -18,6 +18,8 @@ class BookEvent(FrozenModel):
     symbol: str
     exchange_ts: int = Field(ge=0)
     recv_ts: int = Field(ge=0)
+    recv_ts_ns: int = Field(ge=0)
+    recv_seq: int = Field(ge=0)
     event_kind: Literal["snapshot", "delta", "recovery_snapshot"]
     continuity_status: Literal[
         "continuous", "recovery_pending", "recovered", "non_recoverable"
@@ -38,6 +40,8 @@ class BookEvent(FrozenModel):
 
 class BookLevel(FrozenModel):
     book_event_id: str
+    recv_ts_ns: int = Field(ge=0)
+    recv_seq: int = Field(ge=0)
     side: Literal["bid", "ask"]
     level_idx: int = Field(ge=0)
     price: float = Field(gt=0)
@@ -50,6 +54,8 @@ class TradeEvent(FrozenModel):
     symbol: str
     exchange_ts: int = Field(ge=0)
     recv_ts: int = Field(ge=0)
+    recv_ts_ns: int = Field(ge=0)
+    recv_seq: int = Field(ge=0)
     price: float = Field(gt=0)
     size: float = Field(gt=0)
     side: Literal["buy", "sell"]
@@ -66,6 +72,8 @@ class AssetContextEvent(FrozenModel):
     exchange_ts: int | None = Field(default=None, ge=0)
     exchange_ts_quality: Literal["exact", "missing", "derived"] = "exact"
     recv_ts: int = Field(ge=0)
+    recv_ts_ns: int = Field(ge=0)
+    recv_seq: int = Field(ge=0)
     mark_px: float = Field(gt=0)
     oracle_px: float = Field(gt=0)
     funding_rate: float
