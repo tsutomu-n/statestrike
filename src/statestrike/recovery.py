@@ -142,6 +142,12 @@ def resolve_ingress_metadata(
     recv_ts_start: int,
     allow_fixture_fallback: bool,
 ) -> list[MessageIngressMeta]:
+    """Resolve per-message ingress metadata.
+
+    `recv_ts_start` is a fixture-only fallback for deterministic replay. The
+    network truth path must pass ingress metadata for every message and must not
+    synthesize receive timestamps from `recv_ts_start`.
+    """
     if ingress_metadata:
         if len(ingress_metadata) != len(messages):
             raise ValueError("ingress_metadata length must match messages length")

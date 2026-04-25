@@ -4,7 +4,7 @@ import copy
 import json
 from pathlib import Path
 
-from statestrike.recovery import BookRecoveryTracker
+from statestrike.recovery import BookRecoveryTracker, resolve_ingress_metadata
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "hyperliquid"
@@ -42,3 +42,11 @@ def test_book_recovery_tracker_marks_recovery_snapshot_and_missing_symbols() -> 
 
     assert tracker.finalize_gap_flags() == ("l2_book_non_recoverable:ETH",)
 
+
+def test_ingress_metadata_docstring_freezes_fixture_only_fallback_contract() -> None:
+    docstring = resolve_ingress_metadata.__doc__ or ""
+
+    assert "fixture-only" in docstring
+    assert "recv_ts_start" in docstring
+    assert "network" in docstring
+    assert "ingress metadata" in docstring
