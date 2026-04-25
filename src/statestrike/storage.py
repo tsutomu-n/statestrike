@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from datetime import date
 from pathlib import Path
+import secrets
+import time
 from typing import Any
 
 import duckdb
@@ -11,10 +13,12 @@ import zstandard
 
 from statestrike.models import ManifestRecord
 from statestrike.paths import (
+    build_capture_log_path,
     build_normalized_path,
     build_quarantine_path,
     build_raw_path,
 )
+from statestrike.recovery import MessageCaptureContext, MessageIngressMeta
 
 
 class RawWriter:
@@ -63,6 +67,43 @@ class RawWriter:
         manifest_root.mkdir(parents=True, exist_ok=True)
         path = manifest_root / f"{manifest.capture_session_id}.json"
         path.write_text(manifest.model_dump_json(indent=2), encoding="utf-8")
+        return path
+
+
+class CaptureLogWriter:
+    """Writes session-global ordered capture logs with ingress metadata."""
+
+    def __init__(self, *, root: Path) -> None:
+        self.root = root
+
+    def write_batch(
+        self,
+        *,
+        trading_date: date,
+        capture_session_id: str,
+        batch_id: str,
+        messages: list[dict[str, Any]],
+        ingress_metadata: list[MessageIngressMeta] | tuple[MessageIngressMeta, ...],
+        message_contexts: list[MessageCaptureContext] | tuple[MessageCaptureContext, ...],
+    ) -> Path:
+        path = build_capture_log_path(
+            root=self.root,
+            trading_date=trading_date,
+            capture_session_id=capture_session_id,
+            batch_id=batch_id,
+        )
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with zstandard.open(path, "wt", encoding="utf-8") as handle:
+            for message, ingress_meta, message_context in zip(
+                messages, ingress_metadata, message_contexts, strict=True
+            ):
+                row = {
+                    "message": message,
+                    "ingress": ingress_meta.model_dump(mode="json"),
+                    "message_context": message_context.model_dump(mode="json"),
+                }
+                handle.write(json.dumps(row, ensure_ascii=True, separators=(",", ":")))
+                handle.write("\n")
         return path
 
 
@@ -128,8 +169,12 @@ def _write_partitioned_parquet(
 
 
 def _next_part_path(base_dir: Path) -> Path:
-    next_index = len(list(base_dir.glob("part-*.parquet"))) + 1
-    return base_dir / f"part-{next_index:04d}.parquet"
+    while True:
+        candidate = base_dir / (
+            f"part-{time.time_ns()}-{secrets.token_hex(4)}.parquet"
+        )
+        if not candidate.exists():
+            return candidate
 
 
 def _write_parquet_frame(*, path: Path, frame: pd.DataFrame) -> None:

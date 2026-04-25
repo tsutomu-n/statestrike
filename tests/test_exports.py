@@ -72,6 +72,9 @@ def test_export_nautilus_catalog_writes_compare_ready_bundle(tmp_path) -> None:
         symbol="BTC",
     )
 
+    assert export_dir.as_posix().endswith(
+        "/exports/truth/nautilus/date=2026-04-22/symbol=BTC"
+    )
     assert (export_dir / "instrument.parquet").exists()
     assert (export_dir / "trade_ticks.parquet").exists()
     assert (export_dir / "book_levels.parquet").exists()
@@ -91,6 +94,9 @@ def test_export_hftbacktest_npz_writes_current_structured_array(tmp_path) -> Non
         symbol="BTC",
     )
 
+    assert npz_path.as_posix().endswith(
+        "/exports/corrected/hftbacktest/date=2026-04-22/symbol=BTC/btc_market_data.npz"
+    )
     data = np.load(npz_path)["data"]
 
     assert data.dtype.names == (
@@ -143,3 +149,4 @@ def test_validate_export_bundle_reports_integrity_stats(tmp_path) -> None:
     assert report.hftbacktest.exchange_ts_monotonic is True
     assert report.hftbacktest.local_ts_monotonic is True
     assert report.hftbacktest.event_codes == (1, 2)
+    assert report.correction_applied == ("hftbacktest",)

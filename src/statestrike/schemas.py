@@ -141,38 +141,115 @@ def validate_records(table: str, records: list[dict[str, Any]]) -> ValidationRes
         return ValidationResult(valid_rows=[], quarantined_rows=[])
 
     schema = SCHEMAS[table]
-    valid_rows: list[dict[str, Any]] = []
-    quarantined_rows: list[dict[str, Any]] = []
-    for record in records:
-        frame = pd.DataFrame([record])
-        try:
-            validated = schema.validate(frame, lazy=True)
-        except pandera.errors.SchemaErrors as exc:
-            quarantined_rows.append(
-                {
-                    **record,
-                    "quarantine_category": "schema",
-                    "quarantine_reason": _extract_quarantine_reason(exc),
-                    "quarantine_reason_count": _count_failure_reasons(exc),
-                }
+    frame = pd.DataFrame(records)
+    try:
+        validated = schema.validate(frame, lazy=True)
+    except pandera.errors.SchemaErrors as exc:
+        failing_indexes = _extract_failing_indexes(exc)
+        if not failing_indexes:
+            return ValidationResult(
+                valid_rows=[],
+                quarantined_rows=[
+                    {
+                        **record,
+                        "quarantine_category": "schema",
+                        "quarantine_reason": _extract_quarantine_reason(exc),
+                        "quarantine_reason_count": _count_failure_reasons(exc),
+                    }
+                    for record in records
+                ],
             )
-            continue
-        except Exception as exc:
-            quarantined_rows.append(
+
+        quarantined_rows = [
+            {
+                **records[index],
+                "quarantine_category": "schema",
+                "quarantine_reason": _extract_quarantine_reason_for_index(exc, index=index),
+                "quarantine_reason_count": _count_failure_reasons_for_index(
+                    exc, index=index
+                ),
+            }
+            for index in sorted(failing_indexes)
+        ]
+        valid_indexes = [index for index in range(len(records)) if index not in failing_indexes]
+        valid_rows = _validate_subset_rows(
+            schema=schema,
+            frame=frame,
+            indexes=valid_indexes,
+        )
+        return ValidationResult(valid_rows=valid_rows, quarantined_rows=quarantined_rows)
+    except Exception as exc:
+        return ValidationResult(
+            valid_rows=[],
+            quarantined_rows=[
                 {
                     **record,
                     "quarantine_category": "runtime",
                     "quarantine_reason": type(exc).__name__,
                     "quarantine_reason_count": 1,
                 }
-            )
+                for record in records
+            ],
+        )
+    return ValidationResult(
+        valid_rows=validated.to_dict(orient="records"),
+        quarantined_rows=[],
+    )
+
+
+def _validate_subset_rows(
+    *,
+    schema: pa.DataFrameSchema,
+    frame: pd.DataFrame,
+    indexes: list[int],
+) -> list[dict[str, Any]]:
+    if not indexes:
+        return []
+    subset = frame.iloc[indexes].copy()
+    validated_subset = schema.validate(subset, lazy=True)
+    return validated_subset.to_dict(orient="records")
+
+
+def _extract_failing_indexes(exc: pandera.errors.SchemaErrors) -> set[int]:
+    failure_cases = exc.failure_cases
+    indexes: set[int] = set()
+    for value in failure_cases.get("index", pd.Series(dtype=object)).tolist():
+        if pd.isna(value):
             continue
-        valid_rows.extend(validated.to_dict(orient="records"))
-    return ValidationResult(valid_rows=valid_rows, quarantined_rows=quarantined_rows)
+        try:
+            normalized = int(value)
+        except (TypeError, ValueError):
+            continue
+        indexes.add(normalized)
+    return indexes
+
+
+def _failure_cases_for_index(
+    exc: pandera.errors.SchemaErrors, *, index: int
+) -> pd.DataFrame:
+    failure_cases = exc.failure_cases
+    if "index" not in failure_cases:
+        return failure_cases.iloc[0:0]
+    mask = failure_cases["index"].apply(
+        lambda value: False if pd.isna(value) else int(value) == index
+    )
+    return failure_cases.loc[mask]
 
 
 def _extract_quarantine_reason(exc: pandera.errors.SchemaErrors) -> str:
     failure_cases = exc.failure_cases
+    return _extract_quarantine_reason_from_failure_cases(failure_cases)
+
+
+def _extract_quarantine_reason_for_index(
+    exc: pandera.errors.SchemaErrors, *, index: int
+) -> str:
+    return _extract_quarantine_reason_from_failure_cases(
+        _failure_cases_for_index(exc, index=index)
+    )
+
+
+def _extract_quarantine_reason_from_failure_cases(failure_cases: pd.DataFrame) -> str:
     reasons: list[str] = []
     for _, row in failure_cases.iterrows():
         column = row.get("column")
@@ -189,4 +266,11 @@ def _extract_quarantine_reason(exc: pandera.errors.SchemaErrors) -> str:
 
 def _count_failure_reasons(exc: pandera.errors.SchemaErrors) -> int:
     reason_string = _extract_quarantine_reason(exc)
+    return len(reason_string.split("; "))
+
+
+def _count_failure_reasons_for_index(
+    exc: pandera.errors.SchemaErrors, *, index: int
+) -> int:
+    reason_string = _extract_quarantine_reason_for_index(exc, index=index)
     return len(reason_string.split("; "))

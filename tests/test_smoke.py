@@ -8,6 +8,7 @@ from pathlib import Path
 
 import duckdb
 import pytest
+import zstandard
 
 from statestrike.collector import CollectorConfig
 from statestrike.recovery import MessageCaptureContext, MessageIngressMeta
@@ -81,6 +82,7 @@ def test_run_smoke_batch_persists_phase15_artifacts(tmp_path) -> None:
     )
 
     assert result.capture_session_id == "session-1"
+    assert result.capture_log_path.exists()
     assert result.raw_paths["trades:BTC"].exists()
     assert result.normalized_paths["trades:BTC"].exists()
     assert result.quarantine_paths["trades:BTC"].exists()
@@ -118,6 +120,18 @@ def test_run_smoke_batch_persists_phase15_artifacts(tmp_path) -> None:
     assert result.export_validations["BTC"].nautilus_tables["trade_ticks"].row_count == 1
     assert result.export_validations["BTC"].hftbacktest.row_count == 5
     assert export_json["hftbacktest"]["row_count"] == 5
+
+    with zstandard.open(result.capture_log_path, "rt", encoding="utf-8") as handle:
+        capture_log_rows = [json.loads(line) for line in handle]
+
+    assert [row["message"]["channel"] for row in capture_log_rows] == [
+        "l2Book",
+        "trades",
+        "activeAssetCtx",
+        "candle",
+    ]
+    assert capture_log_rows[1]["ingress"]["recv_seq"] == 1
+    assert capture_log_rows[0]["message_context"]["book_event_kind"] == "snapshot"
 
 
 def test_run_smoke_batch_normalizes_full_ordered_stream_once_before_partitioning(
@@ -251,6 +265,7 @@ def test_run_smoke_session_uses_transport_hook_and_tracks_reconnects(tmp_path) -
     assert result.audit_report.thresholds.skew_severe_ms == 70
     assert result.audit_report.thresholds.asset_ctx_stale_threshold_ms == 654321
     assert manifest["capture_session_id"] == "session-2"
+    assert result.capture_log_path.exists()
     assert manifest["started_at"] == "2026-04-23T00:00:00Z"
     assert manifest["ended_at"] == "2026-04-23T00:05:00Z"
     assert manifest["ws_disconnect_count"] == 1

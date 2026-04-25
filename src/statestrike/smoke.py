@@ -41,7 +41,12 @@ from statestrike.recovery import (
 from statestrike.runtime import collect_public_runtime_capture
 from statestrike.schemas import validate_records
 from statestrike.settings import Settings
-from statestrike.storage import NormalizedWriter, QuarantineWriter, RawWriter
+from statestrike.storage import (
+    CaptureLogWriter,
+    NormalizedWriter,
+    QuarantineWriter,
+    RawWriter,
+)
 
 SmokeTransport = Callable[..., Awaitable["SmokeTransportCapture"]]
 
@@ -51,6 +56,7 @@ class SmokeBatchResult(BaseModel):
 
     capture_session_id: str
     manifest_path: Path
+    capture_log_path: Path
     raw_paths: dict[str, Path]
     normalized_paths: dict[str, Path]
     quarantine_paths: dict[str, Path]
@@ -81,6 +87,7 @@ class SmokeCampaignSession(BaseModel):
 
     capture_session_id: str
     manifest_path: Path
+    capture_log_path: Path | None = None
     row_count: int
     channels: tuple[str, ...] = ()
     symbols: tuple[str, ...] = ()
@@ -170,6 +177,7 @@ def run_smoke_batch(
     capture_session_id = capture_session_id or new_capture_session_id()
     started_at = started_at or _utc_now_isoformat()
     raw_writer = RawWriter(root=root)
+    capture_log_writer = CaptureLogWriter(root=root)
     normalized_writer = NormalizedWriter(root=root)
     quarantine_writer = QuarantineWriter(root=root)
 
@@ -189,6 +197,14 @@ def run_smoke_batch(
         messages=messages,
         ingress_metadata=ingress_metadata,
         recv_ts_start=recv_ts_start,
+    )
+    capture_log_path = capture_log_writer.write_batch(
+        trading_date=trading_date,
+        capture_session_id=capture_session_id,
+        batch_id=batch_id,
+        messages=messages,
+        ingress_metadata=resolved_ingress,
+        message_contexts=resolved_contexts,
     )
 
     grouped_messages = _group_messages_by_channel_and_symbol(
@@ -305,6 +321,7 @@ def run_smoke_batch(
     return SmokeBatchResult(
         capture_session_id=capture_session_id,
         manifest_path=manifest_path,
+        capture_log_path=capture_log_path,
         raw_paths=raw_paths,
         normalized_paths=normalized_paths,
         quarantine_paths=quarantine_paths,
@@ -424,6 +441,7 @@ async def run_smoke_campaign(
                 SmokeCampaignSession(
                     capture_session_id=result.capture_session_id,
                     manifest_path=result.manifest_path,
+                    capture_log_path=result.capture_log_path,
                     row_count=len(capture.messages),
                     channels=_artifact_channels(result.raw_paths),
                     symbols=_artifact_symbols(result.raw_paths),
@@ -817,6 +835,7 @@ def _validate_persisted_campaign_artifacts(result: SmokeCampaignResult) -> None:
     for session in result.sessions:
         required_paths = (
             [session.manifest_path]
+            + ([session.capture_log_path] if session.capture_log_path is not None else [])
             + list(session.raw_paths.values())
             + list(session.normalized_paths.values())
             + list(session.quarantine_paths.values())

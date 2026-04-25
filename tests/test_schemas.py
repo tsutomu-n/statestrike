@@ -50,6 +50,34 @@ def test_schema_gate_splits_invalid_trade_rows_to_quarantine() -> None:
     assert result.quarantined_rows[0]["quarantine_reason_count"] == 1
 
 
+def test_schema_gate_vectorizes_and_splits_multiple_invalid_rows_by_index() -> None:
+    rows = normalize_trades(
+        message=load_fixture("trades.json"),
+        capture_session_id="session-1",
+        reconnect_epoch=0,
+        recv_ts=1713818880101,
+        source="ws",
+    )
+    invalid_price_and_side = dict(rows[0])
+    invalid_price_and_side["price"] = 0.0
+    invalid_price_and_side["side"] = "hold"
+    invalid_size = dict(rows[1])
+    invalid_size["size"] = 0.0
+
+    result = validate_records(
+        "trades",
+        [rows[0], invalid_price_and_side, invalid_size],
+    )
+
+    assert result.valid_count == 1
+    assert result.quarantined_count == 2
+    assert result.quarantined_rows[0]["quarantine_reason_count"] == 2
+    assert result.quarantined_rows[0]["quarantine_reason"] == (
+        "price:greater_than(0); side:isin(['buy', 'sell'])"
+    )
+    assert result.quarantined_rows[1]["quarantine_reason"] == "size:greater_than(0)"
+
+
 def test_schema_gate_accepts_asset_context_rows_with_missing_exchange_timestamp() -> None:
     row = {
         "asset_ctx_event_id": "ctx-1",

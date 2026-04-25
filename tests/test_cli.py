@@ -126,3 +126,64 @@ def test_cli_audit_quality_prints_json_report(monkeypatch, tmp_path, capsys) -> 
 
     assert exit_code == 0
     assert summary["row_counts"]["trades"] == 3
+
+
+def test_cli_export_commands_print_resegmented_truth_and_corrected_paths(
+    monkeypatch, tmp_path, capsys
+) -> None:
+    monkeypatch.setattr(
+        cli,
+        "export_nautilus_catalog",
+        lambda **kwargs: tmp_path
+        / "exports"
+        / "truth"
+        / "nautilus"
+        / "date=2026-04-24"
+        / "symbol=BTC",
+    )
+    monkeypatch.setattr(
+        cli,
+        "export_hftbacktest_npz",
+        lambda **kwargs: tmp_path
+        / "exports"
+        / "corrected"
+        / "hftbacktest"
+        / "date=2026-04-24"
+        / "symbol=BTC"
+        / "btc_market_data.npz",
+    )
+
+    nautilus_exit = cli.main(
+        [
+            "export-nautilus",
+            "--data-root",
+            str(tmp_path),
+            "--date",
+            "2026-04-24",
+            "--symbol",
+            "BTC",
+        ]
+    )
+    nautilus_summary = json.loads(capsys.readouterr().out)
+
+    hft_exit = cli.main(
+        [
+            "export-hft",
+            "--data-root",
+            str(tmp_path),
+            "--date",
+            "2026-04-24",
+            "--symbol",
+            "BTC",
+        ]
+    )
+    hft_summary = json.loads(capsys.readouterr().out)
+
+    assert nautilus_exit == 0
+    assert nautilus_summary["path"].endswith(
+        "/exports/truth/nautilus/date=2026-04-24/symbol=BTC"
+    )
+    assert hft_exit == 0
+    assert hft_summary["path"].endswith(
+        "/exports/corrected/hftbacktest/date=2026-04-24/symbol=BTC/btc_market_data.npz"
+    )

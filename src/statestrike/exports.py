@@ -41,6 +41,7 @@ class ExportValidationReport(BaseModel):
 
     nautilus_tables: dict[str, ExportTableValidation]
     hftbacktest: HftbacktestValidation
+    correction_applied: tuple[str, ...] = ()
 
 
 def export_nautilus_catalog(
@@ -54,6 +55,7 @@ def export_nautilus_catalog(
     instrument_id = _instrument_id(symbol)
     export_dir = build_export_path(
         root=export_root,
+        category="truth",
         target="nautilus",
         trading_date=trading_date,
         symbol=symbol,
@@ -175,6 +177,7 @@ def export_hftbacktest_npz(
     symbol = symbol.upper()
     export_dir = build_export_path(
         root=export_root,
+        category="corrected",
         target="hftbacktest",
         trading_date=trading_date,
         symbol=symbol,
@@ -250,12 +253,14 @@ def validate_export_bundle(
     symbol = symbol.upper()
     nautilus_dir = build_export_path(
         root=export_root,
+        category="truth",
         target="nautilus",
         trading_date=trading_date,
         symbol=symbol,
     )
     hft_dir = build_export_path(
         root=export_root,
+        category="corrected",
         target="hftbacktest",
         trading_date=trading_date,
         symbol=symbol,
@@ -276,6 +281,7 @@ def validate_export_bundle(
     return ExportValidationReport(
         nautilus_tables=nautilus_tables,
         hftbacktest=hftbacktest,
+        correction_applied=("hftbacktest",),
     )
 
 

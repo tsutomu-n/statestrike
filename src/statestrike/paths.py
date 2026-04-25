@@ -23,6 +23,7 @@ def build_normalized_path(
 def build_export_path(
     *,
     root: Path,
+    category: str,
     target: str,
     trading_date: date,
     symbol: str,
@@ -30,6 +31,7 @@ def build_export_path(
     return (
         root
         / "exports"
+        / category
         / target
         / f"date={trading_date.isoformat()}"
         / f"symbol={symbol.upper()}"
@@ -99,6 +101,22 @@ def build_raw_path(
         / f"symbol={symbol.upper()}"
         / f"session={capture_session_id}"
         / f"batch-{batch_id}.jsonl.zst"
+    )
+
+
+def build_capture_log_path(
+    *,
+    root: Path,
+    trading_date: date,
+    capture_session_id: str,
+    batch_id: str,
+) -> Path:
+    return (
+        root
+        / "capture_log"
+        / f"date={trading_date.isoformat()}"
+        / f"session={capture_session_id}"
+        / f"capture-log-{batch_id}.jsonl.zst"
     )
 
 

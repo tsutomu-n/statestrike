@@ -6,7 +6,13 @@ from datetime import date
 import zstandard
 
 from statestrike.models import ManifestRecord
-from statestrike.storage import NormalizedWriter, QuarantineWriter, RawWriter
+from statestrike.recovery import MessageCaptureContext, MessageIngressMeta
+from statestrike.storage import (
+    CaptureLogWriter,
+    NormalizedWriter,
+    QuarantineWriter,
+    RawWriter,
+)
 
 
 def test_raw_writer_writes_compressed_jsonl_and_manifest(tmp_path) -> None:
@@ -52,6 +58,50 @@ def test_raw_writer_writes_compressed_jsonl_and_manifest(tmp_path) -> None:
 
     assert manifest_path.name == f"{capture_session_id}.json"
     assert json.loads(manifest_path.read_text(encoding="utf-8"))["row_count"] == 1
+
+
+def test_capture_log_writer_writes_session_global_ordered_entries(tmp_path) -> None:
+    writer = CaptureLogWriter(root=tmp_path)
+    path = writer.write_batch(
+        trading_date=date(2026, 4, 22),
+        capture_session_id="session-1",
+        batch_id="0001",
+        messages=[
+            {"channel": "trades", "data": [{"coin": "BTC"}]},
+            {"channel": "l2Book", "data": {"coin": "BTC"}},
+        ],
+        ingress_metadata=[
+            MessageIngressMeta(
+                recv_wall_ns=1713818880100000000,
+                recv_mono_ns=100,
+                recv_seq=0,
+                connection_id="conn-0",
+            ),
+            MessageIngressMeta(
+                recv_wall_ns=1713818880101000000,
+                recv_mono_ns=101,
+                recv_seq=1,
+                connection_id="conn-0",
+            ),
+        ],
+        message_contexts=[
+            MessageCaptureContext(reconnect_epoch=0, book_epoch=1),
+            MessageCaptureContext(
+                reconnect_epoch=0,
+                book_epoch=1,
+                book_event_kind="snapshot",
+            ),
+        ],
+    )
+
+    with zstandard.open(path, "rt", encoding="utf-8") as handle:
+        rows = [json.loads(line) for line in handle]
+
+    assert path.name == "capture-log-0001.jsonl.zst"
+    assert rows[0]["message"]["channel"] == "trades"
+    assert rows[0]["ingress"]["recv_seq"] == 0
+    assert rows[1]["message"]["channel"] == "l2Book"
+    assert rows[1]["message_context"]["book_event_kind"] == "snapshot"
 
 
 def test_normalized_and_quarantine_writers_create_partitioned_parquet(tmp_path) -> None:
@@ -102,3 +152,57 @@ def test_normalized_and_quarantine_writers_create_partitioned_parquet(tmp_path) 
 
     assert normalized_path.suffix == ".parquet"
     assert quarantine_path.suffix == ".parquet"
+    assert normalized_path.name.startswith("part-")
+    assert quarantine_path.name.startswith("part-")
+    assert normalized_path.name != "part-0001.parquet"
+    assert quarantine_path.name != "part-0001.parquet"
+
+
+def test_normalized_writer_uses_non_sequential_unique_part_filenames(tmp_path) -> None:
+    normalized = NormalizedWriter(root=tmp_path)
+    trading_date = date(2026, 4, 22)
+    rows = [
+        {
+            "trade_event_id": "trade-1",
+            "native_tid": "1",
+            "symbol": "BTC",
+            "exchange_ts": 1,
+            "recv_ts": 2,
+            "price": 100.0,
+            "size": 0.5,
+            "side": "buy",
+            "capture_session_id": "session-1",
+            "reconnect_epoch": 0,
+            "source": "ws",
+            "raw_msg_hash": "raw-1",
+            "dedup_hash": "dedup-1",
+        }
+    ]
+
+    first_path = normalized.write_rows(
+        table="trades",
+        trading_date=trading_date,
+        symbol="BTC",
+        rows=rows,
+    )
+    second_path = normalized.write_rows(
+        table="trades",
+        trading_date=trading_date,
+        symbol="BTC",
+        rows=[
+            {
+                **rows[0],
+                "trade_event_id": "trade-2",
+                "native_tid": "2",
+                "dedup_hash": "dedup-2",
+            }
+        ],
+    )
+
+    assert first_path != second_path
+    assert first_path.exists()
+    assert second_path.exists()
+    assert first_path.name.startswith("part-")
+    assert second_path.name.startswith("part-")
+    assert first_path.name != "part-0001.parquet"
+    assert second_path.name != "part-0002.parquet"

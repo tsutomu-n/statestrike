@@ -61,6 +61,7 @@ def test_settings_expose_phase_one_storage_and_collector_defaults() -> None:
 
     assert settings.data_root == Path("data")
     assert settings.raw_root == Path("data/raw_ws")
+    assert settings.capture_log_root == Path("data/capture_log")
     assert settings.normalized_root == Path("data/normalized")
     assert settings.quarantine_root == Path("data/quarantine")
     assert settings.exports_root == Path("data/exports")

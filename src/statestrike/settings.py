@@ -82,6 +82,10 @@ class Settings(BaseSettings):
         return self.data_root / "raw_ws"
 
     @property
+    def capture_log_root(self) -> Path:
+        return self.data_root / "capture_log"
+
+    @property
     def normalized_root(self) -> Path:
         return self.data_root / "normalized"
 
