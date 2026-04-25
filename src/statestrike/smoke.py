@@ -57,13 +57,17 @@ class SmokeBatchResult(BaseModel):
     capture_session_id: str
     manifest_path: Path
     capture_log_path: Path
-    raw_paths: dict[str, Path]
+    derived_capture_paths: dict[str, Path]
     normalized_paths: dict[str, Path]
     quarantine_paths: dict[str, Path]
     audit_report_paths: dict[str, Path]
     export_validation_report_paths: dict[str, Path]
     audit_report: QualityAuditReport
     export_validations: dict[str, ExportValidationReport]
+
+    @property
+    def raw_paths(self) -> dict[str, Path]:
+        return self.derived_capture_paths
 
 
 class SmokeTransportCapture(BaseModel):
@@ -91,12 +95,26 @@ class SmokeCampaignSession(BaseModel):
     row_count: int
     channels: tuple[str, ...] = ()
     symbols: tuple[str, ...] = ()
-    raw_paths: dict[str, Path] = Field(default_factory=dict)
+    derived_capture_paths: dict[str, Path] = Field(default_factory=dict)
     normalized_paths: dict[str, Path] = Field(default_factory=dict)
     quarantine_paths: dict[str, Path] = Field(default_factory=dict)
     ws_disconnect_count: int = 0
     reconnect_count: int = 0
     gap_flags: tuple[str, ...] = ()
+
+    @model_validator(mode="before")
+    @classmethod
+    def apply_legacy_raw_paths(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+        normalized = dict(data)
+        if "derived_capture_paths" not in normalized and "raw_paths" in normalized:
+            normalized["derived_capture_paths"] = normalized["raw_paths"]
+        return normalized
+
+    @property
+    def raw_paths(self) -> dict[str, Path]:
+        return self.derived_capture_paths
 
 
 class SmokeCampaignScope(BaseModel):
@@ -181,7 +199,7 @@ def run_smoke_batch(
     normalized_writer = NormalizedWriter(root=root)
     quarantine_writer = QuarantineWriter(root=root)
 
-    raw_paths: dict[str, Path] = {}
+    derived_capture_paths: dict[str, Path] = {}
     normalized_paths: dict[str, Path] = {}
     quarantine_paths: dict[str, Path] = {}
     audit_report_paths: dict[str, Path] = {}
@@ -213,7 +231,7 @@ def run_smoke_batch(
         allowed_symbols=config.allowed_symbols,
     )
     for (channel, symbol), grouped in grouped_messages.items():
-        raw_paths[f"{channel}:{symbol}"] = raw_writer.write_batch(
+        derived_capture_paths[f"{channel}:{symbol}"] = raw_writer.write_batch(
             trading_date=trading_date,
             channel=channel,
             symbol=symbol,
@@ -328,7 +346,7 @@ def run_smoke_batch(
         capture_session_id=capture_session_id,
         manifest_path=manifest_path,
         capture_log_path=capture_log_path,
-        raw_paths=raw_paths,
+        derived_capture_paths=derived_capture_paths,
         normalized_paths=normalized_paths,
         quarantine_paths=quarantine_paths,
         audit_report_paths=audit_report_paths,
@@ -449,9 +467,9 @@ async def run_smoke_campaign(
                     manifest_path=result.manifest_path,
                     capture_log_path=result.capture_log_path,
                     row_count=len(capture.messages),
-                    channels=_artifact_channels(result.raw_paths),
-                    symbols=_artifact_symbols(result.raw_paths),
-                    raw_paths=result.raw_paths,
+                    channels=_artifact_channels(result.derived_capture_paths),
+                    symbols=_artifact_symbols(result.derived_capture_paths),
+                    derived_capture_paths=result.derived_capture_paths,
                     normalized_paths=result.normalized_paths,
                     quarantine_paths=result.quarantine_paths,
                     ws_disconnect_count=capture.ws_disconnect_count,
@@ -842,7 +860,7 @@ def _validate_persisted_campaign_artifacts(result: SmokeCampaignResult) -> None:
         required_paths = (
             [session.manifest_path]
             + ([session.capture_log_path] if session.capture_log_path is not None else [])
-            + list(session.raw_paths.values())
+            + list(session.derived_capture_paths.values())
             + list(session.normalized_paths.values())
             + list(session.quarantine_paths.values())
         )

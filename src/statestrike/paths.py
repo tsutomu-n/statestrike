@@ -93,6 +93,12 @@ def build_derived_capture_path(
     capture_session_id: str,
     batch_id: str,
 ) -> Path:
+    """Builds the derived per-channel raw payload path.
+
+    The on-disk `raw_ws` directory is kept for compatibility, but this artifact is
+    derived from the session-global `capture_log` and must not be treated as truth
+    capture.
+    """
     return (
         root
         / "raw_ws"
@@ -113,6 +119,7 @@ def build_raw_path(
     capture_session_id: str,
     batch_id: str,
 ) -> Path:
+    """Legacy alias for `build_derived_capture_path()`."""
     return build_derived_capture_path(
         root=root,
         channel=channel,

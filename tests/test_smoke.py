@@ -106,6 +106,7 @@ def test_run_smoke_batch_persists_phase15_artifacts(tmp_path) -> None:
 
     assert result.capture_session_id == "session-1"
     assert result.capture_log_path.exists()
+    assert result.derived_capture_paths["trades:BTC"].exists()
     assert result.raw_paths["trades:BTC"].exists()
     assert result.normalized_paths["trades:BTC"].exists()
     assert result.quarantine_paths["trades:BTC"].exists()

@@ -79,10 +79,15 @@ class Settings(BaseSettings):
 
     @property
     def raw_root(self) -> Path:
+        """Legacy alias for the derived raw payload root."""
         return self.derived_capture_root
 
     @property
     def derived_capture_root(self) -> Path:
+        """Root for derived per-channel raw payload partitions.
+
+        The physical directory name remains `raw_ws` for compatibility.
+        """
         return self.data_root / "raw_ws"
 
     @property

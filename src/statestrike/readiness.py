@@ -41,6 +41,7 @@ class BacktestReadinessReport(BaseModel):
     funding_enrichment_missing_count: int = Field(ge=0)
     max_quarantine_rate: float = Field(ge=0.0)
     truth_corrected_mixed: bool = False
+    export_contract_invalid_symbols: tuple[str, ...] = ()
 
 
 def run_backtest_readiness(
@@ -78,6 +79,11 @@ def run_backtest_readiness(
     )
     max_quarantine_rate = max(quality_report.quarantine_rates.values(), default=0.0)
     truth_corrected_mixed = _truth_corrected_mixed(root=root)
+    export_contract_invalid_symbols = tuple(
+        symbol
+        for symbol, report in export_validations.items()
+        if not _export_contract_is_valid(report)
+    )
 
     blocking_reasons: list[str] = []
     warning_reasons: list[str] = []
@@ -105,6 +111,8 @@ def run_backtest_readiness(
         blocking_reasons.append("funding_enrichment_incomplete")
     if truth_corrected_mixed:
         blocking_reasons.append("truth_corrected_mixed")
+    if export_contract_invalid_symbols:
+        blocking_reasons.append("export_contract_invalid")
 
     status: Literal["ready", "warning", "blocked"]
     if blocking_reasons:
@@ -128,6 +136,7 @@ def run_backtest_readiness(
         funding_enrichment_missing_count=funding_enrichment_missing_count,
         max_quarantine_rate=max_quarantine_rate,
         truth_corrected_mixed=truth_corrected_mixed,
+        export_contract_invalid_symbols=export_contract_invalid_symbols,
     )
 
 
@@ -205,3 +214,27 @@ def _truth_corrected_mixed(*, root: Path) -> bool:
     legacy_truth = (root / "exports" / "nautilus").exists()
     legacy_corrected = (root / "exports" / "hftbacktest").exists()
     return legacy_truth or legacy_corrected
+
+
+def _export_contract_is_valid(report: ExportValidationReport) -> bool:
+    if "nautilus" not in report.truth_exports:
+        return False
+    if "hftbacktest" not in report.corrected_exports:
+        return False
+
+    truth_targets = set(report.truth_exports)
+    corrected_targets = set(report.corrected_exports)
+    if truth_targets & corrected_targets:
+        return False
+
+    for artifact in report.truth_exports.values():
+        if artifact.category != "truth" or not artifact.truth_preserving:
+            return False
+        if artifact.correction_applied:
+            return False
+    for artifact in report.corrected_exports.values():
+        if artifact.category != "corrected" or artifact.truth_preserving:
+            return False
+        if not artifact.correction_applied:
+            return False
+    return True
