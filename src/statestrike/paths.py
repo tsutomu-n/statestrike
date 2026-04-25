@@ -84,7 +84,7 @@ def build_smoke_campaign_report_path(
     )
 
 
-def build_raw_path(
+def build_derived_capture_path(
     *,
     root: Path,
     channel: str,
@@ -101,6 +101,25 @@ def build_raw_path(
         / f"symbol={symbol.upper()}"
         / f"session={capture_session_id}"
         / f"batch-{batch_id}.jsonl.zst"
+    )
+
+
+def build_raw_path(
+    *,
+    root: Path,
+    channel: str,
+    trading_date: date,
+    symbol: str,
+    capture_session_id: str,
+    batch_id: str,
+) -> Path:
+    return build_derived_capture_path(
+        root=root,
+        channel=channel,
+        trading_date=trading_date,
+        symbol=symbol,
+        capture_session_id=capture_session_id,
+        batch_id=batch_id,
     )
 
 

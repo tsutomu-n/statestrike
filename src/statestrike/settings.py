@@ -79,6 +79,10 @@ class Settings(BaseSettings):
 
     @property
     def raw_root(self) -> Path:
+        return self.derived_capture_root
+
+    @property
+    def derived_capture_root(self) -> Path:
         return self.data_root / "raw_ws"
 
     @property

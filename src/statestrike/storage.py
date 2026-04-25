@@ -16,9 +16,9 @@ import zstandard
 from statestrike.models import ManifestRecord
 from statestrike.paths import (
     build_capture_log_path,
+    build_derived_capture_path,
     build_normalized_path,
     build_quarantine_path,
-    build_raw_path,
 )
 from statestrike.recovery import MessageCaptureContext, MessageIngressMeta
 
@@ -39,7 +39,7 @@ class RawWriter:
         batch_id: str,
         messages: list[dict[str, Any]],
     ) -> Path:
-        path = build_raw_path(
+        path = build_derived_capture_path(
             root=self.root,
             channel=channel,
             trading_date=trading_date,

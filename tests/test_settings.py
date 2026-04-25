@@ -60,6 +60,7 @@ def test_settings_expose_phase_one_storage_and_collector_defaults() -> None:
     settings = Settings()
 
     assert settings.data_root == Path("data")
+    assert settings.derived_capture_root == Path("data/raw_ws")
     assert settings.raw_root == Path("data/raw_ws")
     assert settings.capture_log_root == Path("data/capture_log")
     assert settings.normalized_root == Path("data/normalized")
