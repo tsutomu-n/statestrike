@@ -5,9 +5,8 @@ import json
 from datetime import date
 from pathlib import Path
 
-import duckdb
-
 from statestrike.collector import CollectorConfig
+from statestrike.enrichment import enrich_funding_schedule_from_predicted_fundings
 from statestrike.readiness import (
     BacktestReadinessThresholds,
     ReadinessProfile,
@@ -19,6 +18,21 @@ from statestrike.storage import _read_parquet_frame, _write_parquet_frame
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "hyperliquid"
+PREDICTED_FUNDINGS = [
+    [
+        "BTC",
+        [
+            [
+                "HlPerp",
+                {
+                    "fundingRate": "0.0000125",
+                    "nextFundingTime": 1713819600000,
+                    "fundingIntervalHours": 1,
+                },
+            ]
+        ],
+    ]
+]
 
 
 def load_fixture(name: str) -> dict:
@@ -37,14 +51,14 @@ def readiness_config() -> CollectorConfig:
     )
 
 
-def enrich_next_funding_ts(path: Path, *, value: int) -> None:
-    connection = duckdb.connect()
-    try:
-        frame = connection.read_parquet(str(path)).df()
-    finally:
-        connection.close()
-    frame["next_funding_ts"] = value
-    _write_parquet_frame(path=path, frame=frame)
+def enrich_funding_sidecar(root: Path, *, trading_date: date) -> None:
+    enrich_funding_schedule_from_predicted_fundings(
+        root=root,
+        trading_date=trading_date,
+        symbols=("BTC",),
+        predicted_fundings=PREDICTED_FUNDINGS,
+        enrichment_asof_ts=1713819000000,
+    )
 
 
 def test_backtest_readiness_blocks_when_funding_enrichment_is_missing(tmp_path) -> None:
@@ -117,7 +131,7 @@ def test_backtest_readiness_ready_after_enrichment_for_clean_dataset(tmp_path) -
         batch_id="0001",
         recv_ts_start=1713818880100,
     )
-    enrich_next_funding_ts(result.normalized_paths["asset_ctx:BTC"], value=1713819600000)
+    enrich_funding_sidecar(tmp_path, trading_date=date(2026, 4, 23))
 
     report = run_backtest_readiness(
         root=tmp_path,
@@ -149,7 +163,7 @@ def test_backtest_readiness_warns_on_quarantine_rate_without_blocking(tmp_path) 
         batch_id="0001",
         recv_ts_start=1713818880100,
     )
-    enrich_next_funding_ts(result.normalized_paths["asset_ctx:BTC"], value=1713819600000)
+    enrich_funding_sidecar(tmp_path, trading_date=date(2026, 4, 23))
 
     report = run_backtest_readiness(
         root=tmp_path,
@@ -180,7 +194,7 @@ def test_backtest_readiness_blocks_when_export_contract_is_invalid(tmp_path) -> 
         batch_id="0001",
         recv_ts_start=1713818880100,
     )
-    enrich_next_funding_ts(result.normalized_paths["asset_ctx:BTC"], value=1713819600000)
+    enrich_funding_sidecar(tmp_path, trading_date=date(2026, 4, 23))
 
     report = run_backtest_readiness(
         root=tmp_path,
@@ -219,7 +233,7 @@ def test_backtest_readiness_blocks_when_required_export_file_is_missing(tmp_path
         batch_id="0001",
         recv_ts_start=1713818880100,
     )
-    enrich_next_funding_ts(result.normalized_paths["asset_ctx:BTC"], value=1713819600000)
+    enrich_funding_sidecar(tmp_path, trading_date=date(2026, 4, 23))
     (
         tmp_path
         / "exports"
@@ -255,7 +269,7 @@ def test_backtest_readiness_blocks_when_required_export_has_zero_rows(tmp_path) 
         batch_id="0001",
         recv_ts_start=1713818880100,
     )
-    enrich_next_funding_ts(result.normalized_paths["asset_ctx:BTC"], value=1713819600000)
+    enrich_funding_sidecar(tmp_path, trading_date=date(2026, 4, 23))
     trade_path = (
         tmp_path
         / "exports"
@@ -295,7 +309,7 @@ def test_backtest_readiness_blocks_when_required_normalized_table_is_missing(tmp
         batch_id="0001",
         recv_ts_start=1713818880100,
     )
-    enrich_next_funding_ts(result.normalized_paths["asset_ctx:BTC"], value=1713819600000)
+    enrich_funding_sidecar(tmp_path, trading_date=date(2026, 4, 23))
     result.normalized_paths["trades:BTC"].unlink()
 
     report = run_backtest_readiness(
@@ -323,7 +337,7 @@ def test_backtest_readiness_reports_requested_and_observed_symbol_drift(tmp_path
         batch_id="0001",
         recv_ts_start=1713818880100,
     )
-    enrich_next_funding_ts(result.normalized_paths["asset_ctx:BTC"], value=1713819600000)
+    enrich_funding_sidecar(tmp_path, trading_date=date(2026, 4, 23))
 
     report = run_backtest_readiness(
         root=tmp_path,
@@ -335,3 +349,36 @@ def test_backtest_readiness_reports_requested_and_observed_symbol_drift(tmp_path
     assert report.observed_symbols == ("BTC",)
     assert report.missing_requested_symbols == ("ETH",)
     assert "requested_symbol_missing" in report.blocking_reasons
+
+
+def test_backtest_readiness_blocks_when_funding_source_dex_is_unsupported(tmp_path) -> None:
+    run_smoke_batch(
+        root=tmp_path,
+        trading_date=date(2026, 4, 23),
+        messages=[
+            load_fixture("l2_book.json"),
+            load_fixture("trades.json"),
+            load_fixture("active_asset_ctx.json"),
+        ],
+        config=readiness_config(),
+        capture_session_id="session-ready-unsupported-dex",
+        batch_id="0001",
+        recv_ts_start=1713818880100,
+    )
+    enrich_funding_schedule_from_predicted_fundings(
+        root=tmp_path,
+        trading_date=date(2026, 4, 23),
+        symbols=("BTC",),
+        predicted_fundings=PREDICTED_FUNDINGS,
+        dex="builder-dex",
+        enrichment_asof_ts=1713819000000,
+    )
+
+    report = run_backtest_readiness(
+        root=tmp_path,
+        trading_date=date(2026, 4, 23),
+        symbols=("BTC",),
+    )
+
+    assert report.status == "blocked"
+    assert "funding_source_unsupported_for_dex" in report.blocking_reasons

@@ -5,7 +5,6 @@ import json
 from datetime import date
 from pathlib import Path
 
-import duckdb
 import pytest
 
 from statestrike.backtests import (
@@ -14,11 +13,26 @@ from statestrike.backtests import (
     run_sanity_single_trade_roundtrip,
 )
 from statestrike.collector import CollectorConfig
+from statestrike.enrichment import enrich_funding_schedule_from_predicted_fundings
 from statestrike.smoke import run_smoke_batch
-from statestrike.storage import _write_parquet_frame
 
 
 FIXTURES = Path(__file__).parent / "fixtures" / "hyperliquid"
+PREDICTED_FUNDINGS = [
+    [
+        "BTC",
+        [
+            [
+                "HlPerp",
+                {
+                    "fundingRate": "0.0000125",
+                    "nextFundingTime": 1713819600000,
+                    "fundingIntervalHours": 1,
+                },
+            ]
+        ],
+    ]
+]
 
 
 def load_fixture(name: str) -> dict:
@@ -37,14 +51,14 @@ def backtest_config() -> CollectorConfig:
     )
 
 
-def enrich_next_funding_ts(path: Path, *, value: int) -> None:
-    connection = duckdb.connect()
-    try:
-        frame = connection.read_parquet(str(path)).df()
-    finally:
-        connection.close()
-    frame["next_funding_ts"] = value
-    _write_parquet_frame(path=path, frame=frame)
+def enrich_funding_sidecar(root: Path, *, trading_date: date) -> None:
+    enrich_funding_schedule_from_predicted_fundings(
+        root=root,
+        trading_date=trading_date,
+        symbols=("BTC",),
+        predicted_fundings=PREDICTED_FUNDINGS,
+        enrichment_asof_ts=1713819000000,
+    )
 
 
 def prepare_ready_dataset(tmp_path: Path) -> None:
@@ -61,7 +75,7 @@ def prepare_ready_dataset(tmp_path: Path) -> None:
         batch_id="0001",
         recv_ts_start=1713818880100,
     )
-    enrich_next_funding_ts(result.normalized_paths["asset_ctx:BTC"], value=1713819600000)
+    enrich_funding_sidecar(tmp_path, trading_date=date(2026, 4, 23))
 
 
 def test_sanity_noop_requires_ready_dataset_and_returns_zero_pnl(tmp_path) -> None:
@@ -122,7 +136,7 @@ def test_baseline_simple_momentum_computes_positive_pnl_from_fixture_trend(tmp_p
         batch_id="0001",
         recv_ts_start=1713818880100,
     )
-    enrich_next_funding_ts(result.normalized_paths["asset_ctx:BTC"], value=1713819600000)
+    enrich_funding_sidecar(tmp_path, trading_date=date(2026, 4, 24))
 
     backtest = run_baseline_simple_momentum(
         root=tmp_path,

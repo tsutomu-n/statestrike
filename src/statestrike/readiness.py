@@ -156,6 +156,11 @@ def run_backtest_readiness(
         trading_date=trading_date,
         symbols=requested_symbols,
     )
+    funding_source_unsupported = _funding_source_unsupported_for_dex(
+        root=root,
+        trading_date=trading_date,
+        symbols=requested_symbols,
+    )
     max_quarantine_rate = max(quality_report.quarantine_rates.values(), default=0.0)
     truth_corrected_mixed = _truth_corrected_mixed(root=root)
     normalized_table_invalid_symbols = _normalized_table_invalid_symbols(
@@ -208,6 +213,8 @@ def run_backtest_readiness(
         blocking_reasons.append("funding_enrichment_incomplete")
     elif funding_enrichment_missing_count > 0:
         warning_reasons.append("funding_enrichment_incomplete")
+    if funding_source_unsupported:
+        blocking_reasons.append("funding_source_unsupported_for_dex")
     if truth_corrected_mixed:
         blocking_reasons.append("truth_corrected_mixed")
     if export_contract_invalid_symbols:
@@ -304,8 +311,14 @@ def _count_missing_funding_enrichment(
     trading_date: date,
     symbols: tuple[str, ...],
 ) -> int:
+    sidecar_symbols = _funding_sidecar_covered_symbols(
+        root=root,
+        trading_date=trading_date,
+    )
     files: list[Path] = []
     for symbol in symbols:
+        if symbol in sidecar_symbols:
+            continue
         partition_root = build_normalized_path(
             root=root,
             channel="asset_ctx",
@@ -329,6 +342,67 @@ def _count_missing_funding_enrichment(
         )
     finally:
         connection.close()
+
+
+def _funding_sidecar_covered_symbols(
+    *,
+    root: Path,
+    trading_date: date,
+) -> set[str]:
+    path = _funding_sidecar_path(root=root, trading_date=trading_date)
+    if not path.exists():
+        return set()
+    connection = duckdb.connect()
+    try:
+        source = _parquet_source([path])
+        rows = connection.execute(
+            f"""
+            SELECT DISTINCT symbol
+            FROM {source}
+            WHERE enrichment_kind = 'predicted_funding'
+              AND next_funding_ts IS NOT NULL
+              AND funding_interval_hours IS NOT NULL
+            """
+        ).fetchall()
+    finally:
+        connection.close()
+    return {str(row[0]).upper() for row in rows}
+
+
+def _funding_source_unsupported_for_dex(
+    *,
+    root: Path,
+    trading_date: date,
+    symbols: tuple[str, ...],
+) -> bool:
+    path = _funding_sidecar_path(root=root, trading_date=trading_date)
+    if not path.exists():
+        return False
+    connection = duckdb.connect()
+    try:
+        source = _parquet_source([path])
+        rows = connection.execute(
+            f"""
+            SELECT COUNT(*)
+            FROM {source}
+            WHERE symbol IN ({", ".join("?" for _ in symbols)})
+              AND enrichment_kind = 'unsupported'
+            """,
+            list(symbols),
+        ).fetchone()
+    finally:
+        connection.close()
+    return bool(rows and int(rows[0]) > 0)
+
+
+def _funding_sidecar_path(*, root: Path, trading_date: date) -> Path:
+    return (
+        root
+        / "enriched"
+        / "funding_schedule"
+        / f"date={trading_date.isoformat()}"
+        / "predicted_funding.parquet"
+    )
 
 
 def _observed_symbols(*, root: Path, trading_date: date) -> tuple[str, ...]:
