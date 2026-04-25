@@ -9,6 +9,8 @@ from typing import Any
 
 import duckdb
 import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 import zstandard
 
 from statestrike.models import ManifestRecord
@@ -178,15 +180,22 @@ def _next_part_path(base_dir: Path) -> Path:
 
 
 def _write_parquet_frame(*, path: Path, frame: pd.DataFrame) -> None:
-    connection = duckdb.connect()
-    try:
-        connection.register("rows_df", frame)
-        escaped_path = path.as_posix().replace("'", "''")
-        connection.execute(
-            f"COPY rows_df TO '{escaped_path}' (FORMAT PARQUET, COMPRESSION ZSTD)"
-        )
-    finally:
-        connection.close()
+    table = pa.Table.from_pandas(frame, preserve_index=False)
+    pq.write_table(table, path, compression="zstd", use_dictionary=False)
+
+
+def _read_parquet_frame(path: Path) -> pd.DataFrame:
+    if not path.exists():
+        return pd.DataFrame()
+    table = pq.ParquetFile(path).read()
+    return table.to_pandas()
+
+
+def _read_parquet_frames(files: list[Path]) -> pd.DataFrame:
+    if not files:
+        return pd.DataFrame()
+    frames = [_read_parquet_frame(path) for path in files]
+    return pd.concat(frames, ignore_index=True, sort=False) if frames else pd.DataFrame()
 
 
 def _parquet_source(files: list[Path]) -> str:

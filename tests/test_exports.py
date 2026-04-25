@@ -4,10 +4,10 @@ import json
 from datetime import date
 from pathlib import Path
 
-import duckdb
 from hftbacktest import DEPTH_EVENT, EXCH_EVENT, LOCAL_EVENT, TRADE_EVENT
 from hftbacktest.data import validate_event_order
 import numpy as np
+import pandas as pd
 
 from statestrike.collector import CollectorConfig, collect_market_batch
 from statestrike.exports import (
@@ -80,7 +80,7 @@ def test_export_nautilus_catalog_writes_compare_ready_bundle(tmp_path) -> None:
     assert (export_dir / "book_levels.parquet").exists()
     assert (export_dir / "asset_ctx.parquet").exists()
 
-    instrument_df = duckdb.connect().read_parquet(str(export_dir / "instrument.parquet")).df()
+    instrument_df = pd.read_parquet(export_dir / "instrument.parquet")
     assert instrument_df.loc[0, "instrument_id"] == "BTC-USD-PERP.HYPERLIQUID"
 
 

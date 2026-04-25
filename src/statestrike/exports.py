@@ -5,7 +5,6 @@ from datetime import date
 import io
 from pathlib import Path
 
-import duckdb
 from hftbacktest import BUY_EVENT, DEPTH_EVENT, EXCH_EVENT, LOCAL_EVENT, SELL_EVENT, TRADE_EVENT
 from hftbacktest.data import correct_event_order, correct_local_timestamp, validate_event_order
 from hftbacktest.types import event_dtype
@@ -14,7 +13,7 @@ import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field
 
 from statestrike.paths import build_export_path, build_normalized_path
-from statestrike.storage import _parquet_source, _write_parquet_frame
+from statestrike.storage import _read_parquet_frame, _read_parquet_frames, _write_parquet_frame
 
 
 class ExportTableValidation(BaseModel):
@@ -385,16 +384,7 @@ def _to_hftbacktest_rows(
 
 
 def _read_export_frame(path: Path) -> pd.DataFrame:
-    if not path.exists():
-        return pd.DataFrame()
-    connection = duckdb.connect()
-    try:
-        escaped_path = path.as_posix().replace("'", "''")
-        return connection.execute(
-            f"SELECT * FROM read_parquet('{escaped_path}')"
-        ).fetchdf()
-    finally:
-        connection.close()
+    return _read_parquet_frame(path)
 
 
 def _summarize_export_frame(frame: pd.DataFrame) -> ExportTableValidation:
@@ -477,13 +467,7 @@ def _read_normalized_table(
     files = sorted(base_dir.glob("*.parquet"))
     if not files:
         return pd.DataFrame()
-
-    connection = duckdb.connect()
-    try:
-        source = _parquet_source(files)
-        return connection.execute(f"SELECT * FROM {source}").fetchdf()
-    finally:
-        connection.close()
+    return _read_parquet_frames(files)
 
 
 def _instrument_id(symbol: str) -> str:
