@@ -7,7 +7,6 @@ import secrets
 import time
 from typing import Any
 
-import duckdb
 import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq

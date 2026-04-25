@@ -14,6 +14,9 @@ from statestrike.paths import build_export_path, build_normalized_path
 from statestrike.quality import QualityAuditReport, run_quality_audit
 from statestrike.storage import _parquet_source
 
+# DuckDB is retained for readiness queries over parquet artifacts; capture and
+# normalized write paths remain file/parquet-writer owned.
+
 
 ReadinessProfileName = Literal[
     "substrate_ready",

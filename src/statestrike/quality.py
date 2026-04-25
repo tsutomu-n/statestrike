@@ -10,6 +10,9 @@ from pydantic import BaseModel, ConfigDict, Field
 from statestrike.paths import build_normalized_path, build_quarantine_path
 from statestrike.storage import _parquet_source
 
+# DuckDB stays here as the analytics query engine over immutable parquet files,
+# not as a write-path sink.
+
 
 class QualityAuditReport(BaseModel):
     model_config = ConfigDict(frozen=True)

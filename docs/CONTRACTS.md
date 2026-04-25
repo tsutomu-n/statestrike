@@ -74,6 +74,23 @@ Hyperliquid `predictedFundings` is first-perp-dex only. Unsupported dex requests
 must be recorded as unsupported provenance and surfaced by readiness as
 `funding_source_unsupported_for_dex`; they must not silently fall back.
 
+## Storage And Query Roles
+
+- parquet segment writer = primary sink
+- DuckDB = query / analytics engine
+
+The online write path persists capture logs, derived capture artifacts,
+normalized rows, quarantine rows, and enrichment sidecars as files. Parquet
+segments are written directly by the parquet segment writer; DuckDB is not the
+primary sink for those writes.
+
+DuckDB may remain in readiness, quality, and diagnostics backtests because those
+paths run analytical queries over immutable parquet files.
+
+New write paths must not depend on DuckDB. If a future module uses DuckDB, it
+must stay on the query or analytics side of the boundary unless this contract is
+deliberately revised.
+
 ## Legacy Aliases
 
 The following names are legacy aliases retained for compatibility only:

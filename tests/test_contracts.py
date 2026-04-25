@@ -25,3 +25,16 @@ def test_contracts_document_freezes_core_substrate_terms() -> None:
     ]
     for term in required_terms:
         assert term in text
+
+
+def test_contracts_document_freezes_storage_and_query_roles() -> None:
+    text = Path("docs/CONTRACTS.md").read_text(encoding="utf-8")
+
+    required_terms = [
+        "parquet segment writer = primary sink",
+        "DuckDB = query / analytics engine",
+        "DuckDB may remain in readiness, quality, and diagnostics backtests",
+        "New write paths must not depend on DuckDB",
+    ]
+    for term in required_terms:
+        assert term in text

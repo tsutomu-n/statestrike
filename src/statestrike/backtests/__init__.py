@@ -14,6 +14,9 @@ from statestrike.readiness import (
 )
 from statestrike.storage import _parquet_source
 
+# Diagnostics backtests use DuckDB only to query normalized parquet inputs.
+# They are not a storage or online write path.
+
 
 class BacktestRunResult(BaseModel):
     model_config = ConfigDict(frozen=True)
