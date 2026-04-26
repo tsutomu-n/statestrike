@@ -64,6 +64,9 @@ class HftbacktestMechanicalProbeConfig(HftbacktestAcceptanceConfig):
     latency_label: Literal["synthetic_constant_latency"] = "synthetic_constant_latency"
     far_passive_distance_ticks: int = Field(default=1000, gt=0)
     replay_row_limit: int | None = Field(default=None, gt=0)
+    no_fill_submit_after_feed_events: int = Field(default=1, ge=1)
+    passive_maker_submit_after_feed_events: int = Field(default=1, ge=1)
+    crossing_taker_submit_after_feed_events: int = Field(default=1, ge=1)
     run_no_fill_passive: bool = True
     run_passive_maker: bool = True
     run_crossing_taker: bool = True
@@ -117,6 +120,8 @@ class HftbacktestMechanicalProbeResult(BaseModel):
     reached_end: bool
     timeout_count: int = Field(ge=0)
     feed_event_count: int = Field(ge=0)
+    submit_after_feed_events: int = Field(ge=1)
+    submit_feed_event_count: int | None = Field(default=None, ge=1)
     submit_ts_ns: int | None = Field(default=None, ge=0)
     response_ts_ns: int | None = Field(default=None, ge=0)
     best_bid_at_submit: float | None = None
@@ -468,6 +473,11 @@ def _execute_single_mechanical_probe(
     before_volume = 0.0
     before_value = 0.0
     before_fee = 0.0
+    submit_after_feed_events = _submit_after_feed_events(
+        config=config,
+        family=family,
+    )
+    submit_feed_event_count: int | None = None
 
     for _ in range(row_count + 1000):
         result = hbt.wait_next_feed(False, config.replay_timeout_ns)
@@ -482,6 +492,8 @@ def _execute_single_mechanical_probe(
 
         feed_event_count += 1
         if submitted:
+            continue
+        if feed_event_count < submit_after_feed_events:
             continue
 
         depth = hbt.depth(0)
@@ -512,6 +524,7 @@ def _execute_single_mechanical_probe(
             time_in_force=time_in_force,
         )
         submitted = submit_result == 0
+        submit_feed_event_count = feed_event_count if submitted else None
         order_latency = hbt.order_latency(0)
         response_received = order_latency is not None
         response_ts_ns = (
@@ -547,6 +560,8 @@ def _execute_single_mechanical_probe(
         reached_end=reached_end,
         timeout_count=timeout_count,
         feed_event_count=feed_event_count,
+        submit_after_feed_events=submit_after_feed_events,
+        submit_feed_event_count=submit_feed_event_count,
         submit_ts_ns=submit_ts_ns,
         response_ts_ns=response_ts_ns,
         best_bid_at_submit=best_bid_at_submit,
@@ -561,6 +576,20 @@ def _execute_single_mechanical_probe(
         implied_avg_fill_price=implied_avg_fill_price,
         terminal_position=float(final_state.position),
     )
+
+
+def _submit_after_feed_events(
+    *,
+    config: HftbacktestMechanicalProbeConfig,
+    family: str,
+) -> int:
+    if family == "no_fill_passive":
+        return config.no_fill_submit_after_feed_events
+    if family == "passive_maker":
+        return config.passive_maker_submit_after_feed_events
+    if family == "crossing_taker":
+        return config.crossing_taker_submit_after_feed_events
+    raise ValueError(f"unsupported mechanical probe family: {family}")
 
 
 def _probe_submit_price(
@@ -677,6 +706,12 @@ def _mechanical_probe_blocking_reasons(
     for probe in probes:
         if not probe.submitted:
             reasons.append(f"{probe.probe_name}:not_submitted")
+        if (
+            probe.submitted
+            and probe.submit_feed_event_count is not None
+            and probe.submit_feed_event_count < probe.submit_after_feed_events
+        ):
+            reasons.append(f"{probe.probe_name}:submit_schedule_violation")
         if not probe.response_received:
             reasons.append(f"{probe.probe_name}:response_missing")
         if probe.trading_volume_delta < 0 or probe.trading_value_delta < 0:

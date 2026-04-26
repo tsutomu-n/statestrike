@@ -107,6 +107,10 @@ def test_hftbacktest_mechanical_fill_probe_report_separates_probe_families(
         ("passive_maker", "sell"),
         ("crossing_taker", "sell"),
     }
+    for probe in report.probes:
+        assert probe.submit_after_feed_events == 1
+        assert probe.submit_feed_event_count is not None
+        assert probe.submit_feed_event_count >= probe.submit_after_feed_events
 
     no_fill = next(
         probe
@@ -171,6 +175,48 @@ def test_hftbacktest_mechanical_fill_probe_report_separates_probe_families(
     assert sell_crossing.implied_avg_fill_price > 0
     assert sell_crossing.signed_fill_qty < 0
     assert sell_crossing.terminal_position == sell_crossing.signed_fill_qty
+
+
+def test_hftbacktest_mechanical_fill_probe_report_reports_schedule_contract(
+    tmp_path,
+) -> None:
+    root, trading_date = _write_valid_normalized_rows(tmp_path)
+    npz_path = export_hftbacktest_npz(
+        normalized_root=root,
+        export_root=root,
+        trading_date=trading_date,
+        symbol="BTC",
+    )
+
+    report = run_hftbacktest_mechanical_fill_probe_report(
+        npz_path=npz_path,
+        symbol="BTC",
+        config=HftbacktestMechanicalProbeConfig(
+            tick_size=1.0,
+            lot_size=0.001,
+            order_qty=0.001,
+            no_fill_submit_after_feed_events=1,
+            passive_maker_submit_after_feed_events=1,
+            crossing_taker_submit_after_feed_events=1,
+        ),
+    )
+
+    assert report.accepted is True
+    schedules = {
+        (probe.family, probe.side): (
+            probe.submit_after_feed_events,
+            probe.submit_feed_event_count,
+        )
+        for probe in report.probes
+    }
+    assert schedules == {
+        ("no_fill_passive", "buy"): (1, 1),
+        ("no_fill_passive", "sell"): (1, 1),
+        ("passive_maker", "buy"): (1, 1),
+        ("passive_maker", "sell"): (1, 1),
+        ("crossing_taker", "buy"): (1, 1),
+        ("crossing_taker", "sell"): (1, 1),
+    }
 
 
 def test_hftbacktest_mechanical_fill_probe_report_is_deterministic(tmp_path) -> None:
