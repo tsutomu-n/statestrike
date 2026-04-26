@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import copy
 import json
+import subprocess
+import sys
 from datetime import date
-from decimal import Decimal
 from pathlib import Path
 
 import pytest
 
 from statestrike.baseline_input import build_nautilus_baseline_input
-from statestrike.backtests.nautilus_strategy_adapter import run_nautilus_strategy_adapter
 from statestrike.collector import CollectorConfig
 from statestrike.enrichment import enrich_funding_schedule_from_predicted_fundings
 from statestrike.smoke import run_smoke_batch
@@ -49,21 +49,26 @@ def adapter_config() -> CollectorConfig:
     )
 
 
-def prepare_candidate_dataset(tmp_path: Path) -> Path:
+def prepare_candidate_dataset(
+    tmp_path: Path,
+    *,
+    prices: tuple[float, ...] = (100.25, 100.50, 100.75),
+) -> Path:
     source_root = tmp_path / "source"
     output_root = tmp_path / "candidate"
     trading_date = date(2026, 4, 24)
     trades = copy.deepcopy(load_fixture("trades.json"))
-    trades["data"].append(
+    trades["data"] = [
         {
             "coin": "BTC",
-            "side": "B",
-            "px": "100.75",
+            "side": "B" if index % 2 == 0 else "A",
+            "px": str(price),
             "sz": "0.2",
-            "time": 1713818880070,
-            "tid": 3,
+            "time": 1713818880050 + index * 10,
+            "tid": index + 1,
         }
-    )
+        for index, price in enumerate(prices)
+    ]
     run_smoke_batch(
         root=source_root,
         trading_date=trading_date,
@@ -93,29 +98,124 @@ def prepare_candidate_dataset(tmp_path: Path) -> Path:
     return output_root
 
 
+def run_strategy_adapter_in_child(
+    *,
+    root: Path,
+    trading_date: date,
+    symbol: str,
+    tmp_path: Path,
+    runner_name: str,
+    extra_kwargs: dict[str, object] | None = None,
+) -> dict:
+    output_path = tmp_path / f"{runner_name}.json"
+    kwargs = extra_kwargs or {}
+    code = f"""
+from datetime import date
+from decimal import Decimal
+import json
+from pathlib import Path
+import sys
+from statestrike.backtests.nautilus_strategy_adapter import {runner_name}
+
+root = Path(sys.argv[1])
+output_path = Path(sys.argv[2])
+kwargs = json.loads(sys.argv[3])
+if "trade_size" in kwargs:
+    kwargs["trade_size"] = Decimal(str(kwargs["trade_size"]))
+result = {runner_name}(
+    root=root,
+    trading_date=date.fromisoformat(sys.argv[4]),
+    symbol=sys.argv[5],
+    **kwargs,
+)
+output_path.write_text(result.model_dump_json(), encoding="utf-8")
+"""
+    subprocess.run(
+        [
+            sys.executable,
+            "-c",
+            code,
+            root.as_posix(),
+            output_path.as_posix(),
+            json.dumps(kwargs),
+            trading_date.isoformat(),
+            symbol,
+        ],
+        check=True,
+        cwd=Path(__file__).resolve().parents[1],
+    )
+    return json.loads(output_path.read_text(encoding="utf-8"))
+
+
 def test_nautilus_strategy_adapter_emits_orders_inside_backtest_node(tmp_path) -> None:
     root = prepare_candidate_dataset(tmp_path)
 
-    result = run_nautilus_strategy_adapter(
+    result = run_strategy_adapter_in_child(
         root=root,
         trading_date=date(2026, 4, 24),
         symbol="BTC",
-        trade_size=Decimal("10"),
+        tmp_path=tmp_path,
+        runner_name="run_nautilus_strategy_adapter",
+        extra_kwargs={"trade_size": "10"},
     )
 
-    assert result.strategy_name == "nautilus_single_trade_roundtrip_strategy"
-    assert result.readiness_status == "ready"
-    assert result.nautilus_result.trade_count == 3
-    assert result.nautilus_result.order_count > 0
-    assert result.nautilus_result.position_count > 0
-    assert result.nautilus_result.fee_cost > 0
-    assert result.nautilus_result.net_pnl == pytest.approx(
-        result.nautilus_result.gross_pnl - result.nautilus_result.fee_cost
+    assert result["strategy_name"] == "nautilus_single_trade_roundtrip_strategy"
+    assert result["readiness_status"] == "ready"
+    nautilus = result["nautilus_result"]
+    assert nautilus["input_trade_tick_count"] == 3
+    assert nautilus["executed_order_count"] > 0
+    assert nautilus["fill_event_count"] > 0
+    assert nautilus["closed_position_count"] > 0
+    assert nautilus["fee_cost"] > 0
+    assert nautilus["fee_cost_source"] == "sum(OrderFilled.commission)"
+    assert (
+        nautilus["net_pnl_source"]
+        == 'BacktestResult.stats_pnls["USD"]["PnL (total)"]'
     )
-    assert result.nautilus_result.max_drawdown >= 0
-    assert result.nautilus_result.source == "nautilus_backtest_result_and_engine_cache"
-    assert result.control_result.strategy_name == "nautilus_baseline_harness_v1"
-    assert result.parity.same_symbol is True
-    assert result.parity.same_derived_input is True
-    assert result.parity.exact_pnl_match_required is False
-    assert result.parity.exact_fill_count_match_required is False
+    assert nautilus["net_pnl"] == pytest.approx(
+        nautilus["gross_pnl"] - nautilus["fee_cost"]
+    )
+    assert nautilus["max_drawdown"] >= 0
+    assert len(nautilus["equity_curve"]) >= 2
+    assert nautilus["equity_curve"][-1] == pytest.approx(nautilus["net_pnl"])
+    assert nautilus["equity_curve_source"] == "PositionClosed.realized_pnl"
+    assert nautilus["source"] == "nautilus_backtest_result_and_engine_cache"
+    assert result["control_result"]["strategy_name"] == "nautilus_baseline_harness_v1"
+    assert result["parity"]["same_symbol"] is True
+    assert result["parity"]["same_derived_input"] is True
+    assert result["parity"]["exact_pnl_match_required"] is False
+    assert result["parity"]["exact_fill_count_match_required"] is False
+
+
+def test_nautilus_repeated_order_strategy_emits_multiple_orders(tmp_path) -> None:
+    root = prepare_candidate_dataset(
+        tmp_path,
+        prices=(100.25, 100.50, 100.75, 101.00, 101.25, 101.50),
+    )
+
+    result = run_strategy_adapter_in_child(
+        root=root,
+        trading_date=date(2026, 4, 24),
+        symbol="BTC",
+        tmp_path=tmp_path,
+        runner_name="run_nautilus_repeated_order_strategy_harness",
+        extra_kwargs={"trade_size": "10", "max_roundtrips": 2},
+    )
+
+    assert result["strategy_name"] == "nautilus_simple_momentum_strategy"
+    nautilus = result["nautilus_result"]
+    assert nautilus["input_trade_tick_count"] == 6
+    assert nautilus["executed_order_count"] > 2
+    assert nautilus["fill_event_count"] > 2
+    assert nautilus["closed_position_count"] >= 1
+    assert nautilus["fee_cost"] > 0
+    assert nautilus["net_pnl"] == pytest.approx(
+        nautilus["gross_pnl"] - nautilus["fee_cost"]
+    )
+    assert nautilus["max_drawdown"] >= 0
+    assert len(nautilus["equity_curve"]) >= 2
+    assert nautilus["equity_curve"][-1] == pytest.approx(nautilus["net_pnl"])
+    assert nautilus["equity_curve_source"] == "PositionClosed.realized_pnl"
+    assert result["control_result"]["strategy_name"] == "nautilus_baseline_harness_v1"
+    assert result["parity"]["same_symbol"] is True
+    assert result["parity"]["same_derived_input"] is True
