@@ -176,6 +176,9 @@ def test_export_hftbacktest_npz_writes_current_structured_array(tmp_path) -> Non
     )
     validate_event_order(data)
     assert np.all(data["local_ts"] >= data["exch_ts"])
+    assert data["exch_ts"].min() == 1713818880000000000
+    assert (data["local_ts"] - data["exch_ts"]).min() == 41000000
+    assert (data["local_ts"] - data["exch_ts"]).max() == 100000000
     assert {int(code & 0xFF) for code in data["ev"]} == {
         DEPTH_EVENT,
         TRADE_EVENT,
@@ -213,6 +216,14 @@ def test_validate_export_bundle_reports_integrity_stats(tmp_path) -> None:
     assert report.hftbacktest.null_count == 0
     assert report.hftbacktest.exchange_ts_monotonic is True
     assert report.hftbacktest.local_ts_monotonic is True
+    assert report.hftbacktest.event_order_valid is True
+    assert report.hftbacktest.feed_latency_ns_nonnegative is True
+    assert report.hftbacktest.feed_latency_ns_min == 41000000
+    assert report.hftbacktest.feed_latency_ns_max == 100000000
+    assert report.hftbacktest.exchange_ts_min_ns == 1713818880000000000
+    assert report.hftbacktest.exchange_ts_max_ns == 1713818880060000000
+    assert report.hftbacktest.local_ts_min_ns == 1713818880100000000
+    assert report.hftbacktest.local_ts_max_ns == 1713818880101000000
     assert report.hftbacktest.event_codes == (1, 2)
     assert report.truth_exports["nautilus"].category == "truth"
     assert report.truth_exports["nautilus"].truth_preserving is True
@@ -223,3 +234,33 @@ def test_validate_export_bundle_reports_integrity_stats(tmp_path) -> None:
         "correct_event_order",
     )
     assert report.correction_applied == ("hftbacktest",)
+
+
+def test_validate_export_bundle_detects_invalid_hftbacktest_event_order(
+    tmp_path,
+) -> None:
+    root, trading_date = _write_valid_normalized_rows(tmp_path)
+    export_nautilus_catalog(
+        normalized_root=root,
+        export_root=root,
+        trading_date=trading_date,
+        symbol="BTC",
+    )
+    npz_path = export_hftbacktest_npz(
+        normalized_root=root,
+        export_root=root,
+        trading_date=trading_date,
+        symbol="BTC",
+    )
+    with np.load(npz_path) as archive:
+        data = archive["data"][::-1].copy()
+    np.savez_compressed(npz_path, data=data)
+
+    report = validate_export_bundle(
+        export_root=root,
+        trading_date=trading_date,
+        symbol="BTC",
+    )
+
+    assert report.hftbacktest.event_order_valid is False
+    assert report.hftbacktest.feed_latency_ns_nonnegative is True

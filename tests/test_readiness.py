@@ -5,6 +5,8 @@ import json
 from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
+import numpy as np
+
 from statestrike.collector import CollectorConfig
 from statestrike.enrichment import enrich_funding_schedule_from_predicted_fundings
 from statestrike.funding import build_funding_history_sidecar
@@ -370,6 +372,50 @@ def test_backtest_readiness_blocks_when_required_export_has_zero_rows(tmp_path) 
     assert report.status == "blocked"
     assert report.export_artifact_invalid_symbols == ("BTC",)
     assert "required_export_artifact_incomplete" in report.blocking_reasons
+
+
+def test_backtest_readiness_blocks_when_hftbacktest_latency_is_negative(tmp_path) -> None:
+    run_smoke_batch(
+        root=tmp_path,
+        trading_date=date(2026, 4, 23),
+        messages=[
+            load_fixture("l2_book.json"),
+            load_fixture("trades.json"),
+            load_fixture("active_asset_ctx.json"),
+        ],
+        config=readiness_config(),
+        capture_session_id="session-ready-invalid-hft-latency",
+        batch_id="0001",
+        recv_ts_start=1713818880100,
+    )
+    enrich_funding_sidecar(tmp_path, trading_date=date(2026, 4, 23))
+    hft_path = (
+        tmp_path
+        / "exports"
+        / "corrected"
+        / "hftbacktest"
+        / "date=2026-04-23"
+        / "symbol=BTC"
+        / "btc_market_data.npz"
+    )
+    with np.load(hft_path) as archive:
+        data = archive["data"].copy()
+    data["local_ts"][0] = data["exch_ts"][0] - 1
+    np.savez_compressed(hft_path, data=data)
+
+    report = run_backtest_readiness(
+        root=tmp_path,
+        trading_date=date(2026, 4, 23),
+        symbols=("BTC",),
+    )
+
+    assert report.status == "blocked"
+    assert report.export_artifact_invalid_symbols == ("BTC",)
+    assert "required_export_artifact_incomplete" in report.blocking_reasons
+    assert (
+        report.export_validations["BTC"].hftbacktest.feed_latency_ns_nonnegative
+        is False
+    )
 
 
 def test_backtest_readiness_blocks_when_required_normalized_table_is_missing(tmp_path) -> None:

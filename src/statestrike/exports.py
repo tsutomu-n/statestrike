@@ -33,6 +33,14 @@ class HftbacktestValidation(BaseModel):
     null_count: int = Field(ge=0)
     exchange_ts_monotonic: bool
     local_ts_monotonic: bool
+    event_order_valid: bool = True
+    feed_latency_ns_nonnegative: bool = True
+    feed_latency_ns_min: int | None = None
+    feed_latency_ns_max: int | None = None
+    exchange_ts_min_ns: int | None = Field(default=None, ge=0)
+    exchange_ts_max_ns: int | None = Field(default=None, ge=0)
+    local_ts_min_ns: int | None = Field(default=None, ge=0)
+    local_ts_max_ns: int | None = Field(default=None, ge=0)
     event_codes: tuple[int, ...]
 
 
@@ -458,7 +466,7 @@ def _to_hftbacktest_rows(
     ).astype(np.uint64)
     rows = np.zeros(len(frame), dtype=event_dtype)
     rows["ev"] = side_flags | np.uint64(event_code)
-    rows["exch_ts"] = frame["exchange_ts"].to_numpy(dtype=np.int64)
+    rows["exch_ts"] = frame["exchange_ts"].to_numpy(dtype=np.int64) * np.int64(1000000)
     local_ts_column = "recv_ts_ns" if "recv_ts_ns" in frame.columns else "recv_ts"
     rows["local_ts"] = frame[local_ts_column].to_numpy(dtype=np.int64)
     rows["px"] = frame[price_column].to_numpy(dtype=np.float64)
@@ -507,6 +515,7 @@ def _summarize_hftbacktest_npz(path: Path) -> HftbacktestValidation:
             local_ts_monotonic=True,
             event_codes=(),
         )
+    latency = data["local_ts"] - data["exch_ts"]
     return HftbacktestValidation(
         row_count=int(len(data)),
         null_count=_count_structured_nulls(data),
@@ -516,8 +525,25 @@ def _summarize_hftbacktest_npz(path: Path) -> HftbacktestValidation:
         local_ts_monotonic=_is_non_decreasing(
             data["local_ts"][(data["ev"] & LOCAL_EVENT) == LOCAL_EVENT]
         ),
+        event_order_valid=_hftbacktest_event_order_valid(data),
+        feed_latency_ns_nonnegative=bool(np.all(latency >= 0)),
+        feed_latency_ns_min=int(latency.min()),
+        feed_latency_ns_max=int(latency.max()),
+        exchange_ts_min_ns=int(data["exch_ts"].min()),
+        exchange_ts_max_ns=int(data["exch_ts"].max()),
+        local_ts_min_ns=int(data["local_ts"].min()),
+        local_ts_max_ns=int(data["local_ts"].max()),
         event_codes=tuple(sorted({int(code & 0xFF) for code in data["ev"]})),
     )
+
+
+def _hftbacktest_event_order_valid(data: np.ndarray) -> bool:
+    try:
+        with redirect_stdout(io.StringIO()):
+            validate_event_order(data)
+    except Exception:
+        return False
+    return True
 
 
 def _is_non_decreasing(values: np.ndarray) -> bool:

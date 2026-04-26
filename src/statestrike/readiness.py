@@ -808,6 +808,10 @@ def _export_artifacts_are_complete(
             not path.exists()
             or path.stat().st_size == 0
             or report.hftbacktest.row_count == 0
+            or not report.hftbacktest.exchange_ts_monotonic
+            or not report.hftbacktest.local_ts_monotonic
+            or not report.hftbacktest.event_order_valid
+            or not report.hftbacktest.feed_latency_ns_nonnegative
         ):
             return False
     return True
