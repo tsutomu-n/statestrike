@@ -4,7 +4,7 @@ import copy
 import json
 import subprocess
 import sys
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -12,6 +12,7 @@ import pytest
 from statestrike.baseline_input import build_nautilus_baseline_input
 from statestrike.collector import CollectorConfig
 from statestrike.enrichment import enrich_funding_schedule_from_predicted_fundings
+from statestrike.funding import build_funding_history_sidecar
 from statestrike.smoke import run_smoke_batch
 
 
@@ -127,6 +128,19 @@ def prepare_candidate_dataset(
     return output_root
 
 
+def funding_history_payload(symbol: str, trading_date: date) -> list[dict[str, str | int]]:
+    start = datetime.combine(trading_date, datetime.min.time(), tzinfo=UTC)
+    return [
+        {
+            "coin": symbol,
+            "fundingRate": "0.0000125",
+            "premium": "0.0000010",
+            "time": int((start + timedelta(hours=hour)).timestamp() * 1000),
+        }
+        for hour in range(24)
+    ]
+
+
 def run_strategy_adapter_in_child(
     *,
     root: Path,
@@ -238,6 +252,8 @@ def test_nautilus_repeated_order_strategy_emits_multiple_orders(tmp_path) -> Non
     assert nautilus["fill_event_count"] > 2
     assert nautilus["closed_position_count"] >= 1
     assert nautilus["fee_cost"] > 0
+    assert nautilus["position_interval_count"] > 0
+    assert nautilus["position_intervals"][0]["source"] == "nautilus_order_fills"
     assert nautilus["net_pnl"] == pytest.approx(
         nautilus["gross_pnl"] - nautilus["fee_cost"]
     )
@@ -248,6 +264,47 @@ def test_nautilus_repeated_order_strategy_emits_multiple_orders(tmp_path) -> Non
     assert result["control_result"]["strategy_name"] == "nautilus_baseline_harness_v1"
     assert result["parity"]["same_symbol"] is True
     assert result["parity"]["same_derived_input"] is True
+
+
+def test_repeated_order_strategy_with_funding_pnl_keeps_net_fields_separate(
+    tmp_path,
+) -> None:
+    trading_date = date(2026, 4, 24)
+    root = prepare_candidate_dataset(
+        tmp_path,
+        prices=(100.25, 100.50, 100.75, 101.00, 101.25, 101.50),
+    )
+    build_funding_history_sidecar(
+        root=root,
+        trading_date=trading_date,
+        symbols=("BTC",),
+        funding_history_payloads={"BTC": funding_history_payload("BTC", trading_date)},
+    )
+
+    result = run_strategy_adapter_in_child(
+        root=root,
+        trading_date=trading_date,
+        symbol="BTC",
+        tmp_path=tmp_path,
+        runner_name="run_nautilus_repeated_order_strategy_with_funding_pnl",
+        extra_kwargs={"trade_size": "10", "max_roundtrips": 2},
+    )
+
+    assert result["strategy_name"] == (
+        "nautilus_simple_momentum_strategy_with_funding_pnl"
+    )
+    assert result["dataset_profile"] == "nautilus_funding_candidate"
+    assert result["funding_treatment"] == "ex_post_ledger"
+    assert result["funding_ledger"]["source_type"] == "fundingHistory"
+    assert result["baseline_result"]["nautilus_result"]["funding_treatment"] == "ignored"
+    augmented = result["augmented_pnl"]
+    nautilus = result["baseline_result"]["nautilus_result"]
+    assert augmented["gross_pnl_ex_funding"] == pytest.approx(nautilus["gross_pnl"])
+    assert augmented["fee_cost"] == pytest.approx(nautilus["fee_cost"])
+    assert augmented["net_pnl_ex_funding"] == pytest.approx(nautilus["net_pnl"])
+    assert augmented["net_pnl_after_funding"] == pytest.approx(
+        augmented["net_pnl_ex_funding"] + augmented["funding_pnl"]
+    )
 
 
 def test_nautilus_repeated_order_strategy_accepts_eth_added_symbol(tmp_path) -> None:

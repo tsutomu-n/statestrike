@@ -31,6 +31,13 @@ from statestrike.backtests.nautilus_harness import (
     compute_max_drawdown,
     run_nautilus_baseline_harness_v1,
 )
+from statestrike.funding_pnl import (
+    FundingAugmentedPnlSummary,
+    FundingPnlLedger,
+    FundingPositionInterval,
+    build_augmented_pnl_summary,
+    build_funding_pnl_ledger,
+)
 from statestrike.readiness import (
     BacktestReadinessReport,
     ReadinessProfileName,
@@ -144,6 +151,8 @@ class NautilusStrategyAdapterMetrics(BaseModel):
     max_drawdown: float = Field(ge=0.0)
     equity_curve: tuple[float, ...]
     equity_curve_source: str = "PositionClosed.realized_pnl"
+    position_intervals: tuple[FundingPositionInterval, ...] = ()
+    position_interval_count: int = Field(default=0, ge=0)
     backtest_start_ns: int | None = None
     backtest_end_ns: int | None = None
     run_id: str
@@ -183,6 +192,25 @@ class NautilusStrategyAdapterResult(BaseModel):
     nautilus_result: NautilusStrategyAdapterMetrics
     parity: NautilusStrategyAdapterParity
     readiness_report: BacktestReadinessReport
+
+
+class NautilusFundingPnlIntegrationResult(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    strategy_name: str
+    symbol: str
+    date_range: tuple[str, str]
+    dataset_profile: str
+    readiness_status: str
+    baseline_result: NautilusStrategyAdapterResult
+    funding_ledger: FundingPnlLedger
+    augmented_pnl: FundingAugmentedPnlSummary
+    funding_treatment: Literal["ex_post_ledger"] = "ex_post_ledger"
+    note: str = (
+        "Nautilus core accounting remains the source for net_pnl_ex_funding and "
+        "fee_cost; funding_pnl is calculated after the run from official "
+        "fundingHistory and signed position intervals."
+    )
 
 
 def run_nautilus_strategy_adapter(
@@ -374,6 +402,47 @@ def run_nautilus_repeated_order_strategy_harness(
     )
 
 
+def run_nautilus_repeated_order_strategy_with_funding_pnl(
+    *,
+    root: Path,
+    trading_date: date,
+    symbol: str,
+    profile: ReadinessProfileName = "nautilus_funding_candidate",
+    trade_size: Decimal = Decimal("0.01"),
+    max_roundtrips: int = 5,
+) -> NautilusFundingPnlIntegrationResult:
+    baseline = run_nautilus_repeated_order_strategy_harness(
+        root=root,
+        trading_date=trading_date,
+        symbol=symbol,
+        profile=profile,
+        trade_size=trade_size,
+        max_roundtrips=max_roundtrips,
+    )
+    funding_ledger = build_funding_pnl_ledger(
+        root=root,
+        trading_date=trading_date,
+        symbol=symbol,
+        position_intervals=baseline.nautilus_result.position_intervals,
+    )
+    augmented_pnl = build_augmented_pnl_summary(
+        gross_pnl_ex_funding=baseline.nautilus_result.gross_pnl,
+        fee_cost=baseline.nautilus_result.fee_cost,
+        net_pnl_ex_funding=baseline.nautilus_result.net_pnl,
+        funding_pnl=funding_ledger.funding_pnl,
+    )
+    return NautilusFundingPnlIntegrationResult(
+        strategy_name="nautilus_simple_momentum_strategy_with_funding_pnl",
+        symbol=baseline.symbol,
+        date_range=baseline.date_range,
+        dataset_profile=baseline.dataset_profile,
+        readiness_status=baseline.readiness_status,
+        baseline_result=baseline,
+        funding_ledger=funding_ledger,
+        augmented_pnl=augmented_pnl,
+    )
+
+
 def _write_strategy_catalog(
     *,
     root: Path,
@@ -447,6 +516,10 @@ def _run_nautilus_strategy(
         fee_cost = _fee_cost_from_orders(orders)
         net_pnl = _net_pnl_from_result(result)
         fill_event_count = _fill_event_count_from_orders(orders)
+        position_intervals = _position_intervals_from_orders(
+            orders=orders,
+            symbol=str(instrument_id.symbol).split("-")[0],
+        )
         closed_position_count = int(engine.cache.positions_closed_count())
         open_position_count_end = int(engine.cache.positions_open_count())
         equity_curve = _equity_curve_from_positions(positions)
@@ -472,6 +545,8 @@ def _run_nautilus_strategy(
         backtest_start_ns=result.backtest_start,
         backtest_end_ns=result.backtest_end,
         run_id=result.run_id,
+        position_intervals=position_intervals,
+        position_interval_count=len(position_intervals),
     )
 
 
@@ -494,6 +569,54 @@ def _fill_event_count_from_orders(orders: tuple[Any, ...]) -> int:
             if event.__class__.__name__ == "OrderFilled":
                 count += 1
     return count
+
+
+def _position_intervals_from_orders(
+    *,
+    orders: tuple[Any, ...],
+    symbol: str,
+) -> tuple[FundingPositionInterval, ...]:
+    fills: list[tuple[int, int, float]] = []
+    sequence = 0
+    for order in orders:
+        events = getattr(order, "events", ())
+        for event in events:
+            if event.__class__.__name__ != "OrderFilled":
+                continue
+            order_side = str(getattr(event, "order_side", "")).upper()
+            quantity = float(getattr(event, "last_qty"))
+            signed_delta = quantity if "BUY" in order_side else -quantity
+            fills.append((int(getattr(event, "ts_event")), sequence, signed_delta))
+            sequence += 1
+
+    position = 0.0
+    opened_ts_ns: int | None = None
+    intervals: list[FundingPositionInterval] = []
+    for ts_event, _, signed_delta in sorted(fills):
+        if opened_ts_ns is not None and position != 0.0:
+            intervals.append(
+                FundingPositionInterval(
+                    symbol=symbol,
+                    opened_ts_ns=opened_ts_ns,
+                    closed_ts_ns=ts_event,
+                    signed_position_size=position,
+                    source="nautilus_order_fills",
+                )
+            )
+        position += signed_delta
+        opened_ts_ns = ts_event if position != 0.0 else None
+
+    if opened_ts_ns is not None and position != 0.0:
+        intervals.append(
+            FundingPositionInterval(
+                symbol=symbol,
+                opened_ts_ns=opened_ts_ns,
+                closed_ts_ns=None,
+                signed_position_size=position,
+                source="nautilus_order_fills",
+            )
+        )
+    return tuple(intervals)
 
 
 def _equity_curve_from_positions(positions: tuple[Any, ...]) -> tuple[float, ...]:
