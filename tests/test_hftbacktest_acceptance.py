@@ -1,8 +1,12 @@
 from __future__ import annotations
 
+import math
+
 from statestrike.exports import export_hftbacktest_npz
 from statestrike.hftbacktest_acceptance import (
     HftbacktestAcceptanceConfig,
+    HftbacktestMechanicalProbeConfig,
+    run_hftbacktest_mechanical_fill_probe_report,
     run_hftbacktest_replay_acceptance,
 )
 from test_exports import _write_valid_normalized_rows
@@ -62,3 +66,97 @@ def test_hftbacktest_replay_acceptance_reports_model_contract(tmp_path) -> None:
     assert report.exchange_model == "no_partial_fill"
     assert report.order_latency_entry_ns == 0
     assert report.order_latency_response_ns == 0
+
+
+def test_hftbacktest_mechanical_fill_probe_report_separates_probe_families(
+    tmp_path,
+) -> None:
+    root, trading_date = _write_valid_normalized_rows(tmp_path)
+    npz_path = export_hftbacktest_npz(
+        normalized_root=root,
+        export_root=root,
+        trading_date=trading_date,
+        symbol="BTC",
+    )
+
+    report = run_hftbacktest_mechanical_fill_probe_report(
+        npz_path=npz_path,
+        symbol="BTC",
+        config=HftbacktestMechanicalProbeConfig(
+            tick_size=1.0,
+            lot_size=0.001,
+            order_qty=0.001,
+            far_passive_distance_ticks=1000,
+        ),
+    )
+
+    assert report.accepted is True
+    assert report.acceptance_level == "P4-18_mechanical_reporting"
+    assert report.latency_contract.model == "synthetic_constant_latency"
+    assert report.latency_contract.calibrated is False
+    assert report.queue_contract.model == "risk_adverse"
+    assert report.queue_contract.calibrated is False
+    assert report.calibration_claimed is False
+    assert report.fill_realism_claimed is False
+    assert report.strategy_edge_claimed is False
+    assert {probe.family for probe in report.probes} == {
+        "no_fill_passive",
+        "passive_maker",
+        "crossing_taker",
+    }
+
+    no_fill = next(probe for probe in report.probes if probe.family == "no_fill_passive")
+    assert no_fill.submitted is True
+    assert no_fill.response_received is True
+    assert no_fill.filled is False
+    assert no_fill.fill_count_delta == 0
+    assert no_fill.terminal_position == 0.0
+
+    passive = next(probe for probe in report.probes if probe.family == "passive_maker")
+    assert passive.submitted is True
+    assert passive.response_received is True
+    assert passive.fill_count_delta >= 0
+    assert math.isfinite(passive.fee_delta)
+
+    crossing = next(probe for probe in report.probes if probe.family == "crossing_taker")
+    assert crossing.submitted is True
+    assert crossing.response_received is True
+    assert crossing.filled is True
+    assert crossing.fill_count_delta >= 1
+    assert crossing.trading_volume_delta > 0
+    assert crossing.trading_value_delta > 0
+    assert crossing.implied_avg_fill_price is not None
+    assert crossing.implied_avg_fill_price > 0
+    assert crossing.terminal_position == crossing.signed_fill_qty
+    assert len(report.fill_ledger) >= 1
+
+
+def test_hftbacktest_mechanical_fill_probe_report_is_deterministic(tmp_path) -> None:
+    root, trading_date = _write_valid_normalized_rows(tmp_path)
+    npz_path = export_hftbacktest_npz(
+        normalized_root=root,
+        export_root=root,
+        trading_date=trading_date,
+        symbol="BTC",
+    )
+
+    first = run_hftbacktest_mechanical_fill_probe_report(
+        npz_path=npz_path,
+        symbol="BTC",
+        config=HftbacktestMechanicalProbeConfig(
+            tick_size=1.0,
+            lot_size=0.001,
+            order_qty=0.001,
+        ),
+    )
+    second = run_hftbacktest_mechanical_fill_probe_report(
+        npz_path=npz_path,
+        symbol="BTC",
+        config=HftbacktestMechanicalProbeConfig(
+            tick_size=1.0,
+            lot_size=0.001,
+            order_qty=0.001,
+        ),
+    )
+
+    assert first.model_dump(mode="json") == second.model_dump(mode="json")
