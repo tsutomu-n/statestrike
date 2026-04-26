@@ -5,7 +5,18 @@ from typing import Literal
 
 import hftbacktest as hftbacktest_pkg
 from hftbacktest import BacktestAsset, HashMapMarketDepthBacktest
-from hftbacktest.order import GTC, GTX, IOC, LIMIT
+from hftbacktest.order import (
+    CANCELED,
+    EXPIRED,
+    FILLED,
+    GTC,
+    GTX,
+    IOC,
+    LIMIT,
+    NEW,
+    PARTIALLY_FILLED,
+    REJECTED,
+)
 import numpy as np
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -118,6 +129,7 @@ class HftbacktestMechanicalProbeResult(BaseModel):
     response_received: bool
     filled: bool
     reached_end: bool
+    submit_result_code: int | None = None
     timeout_count: int = Field(ge=0)
     feed_event_count: int = Field(ge=0)
     submit_after_feed_events: int = Field(ge=1)
@@ -134,6 +146,29 @@ class HftbacktestMechanicalProbeResult(BaseModel):
     trading_value_delta: float = Field(ge=0)
     fee_delta: float
     implied_avg_fill_price: float | None = None
+    engine_order_status_code: int | None = Field(default=None, ge=0)
+    engine_order_status: Literal[
+        "new",
+        "expired",
+        "filled",
+        "canceled",
+        "partially_filled",
+        "rejected",
+        "unknown",
+    ]
+    engine_order_lifecycle: Literal[
+        "not_submitted",
+        "accepted",
+        "working",
+        "filled",
+        "partially_filled",
+        "canceled",
+        "expired",
+        "rejected",
+        "unknown",
+    ]
+    engine_order_leaves_qty: float | None = Field(default=None, ge=0)
+    engine_order_exec_qty: float | None = Field(default=None, ge=0)
     terminal_position: float
 
 
@@ -473,6 +508,7 @@ def _execute_single_mechanical_probe(
     before_volume = 0.0
     before_value = 0.0
     before_fee = 0.0
+    submit_result_code: int | None = None
     submit_after_feed_events = _submit_after_feed_events(
         config=config,
         family=family,
@@ -523,6 +559,7 @@ def _execute_single_mechanical_probe(
             qty=config.order_qty,
             time_in_force=time_in_force,
         )
+        submit_result_code = int(submit_result)
         submitted = submit_result == 0
         submit_feed_event_count = feed_event_count if submitted else None
         order_latency = hbt.order_latency(0)
@@ -541,6 +578,11 @@ def _execute_single_mechanical_probe(
     trading_value_delta = float(final_state.trading_value) - before_value
     fee_delta = float(final_state.fee) - before_fee
     signed_fill_qty = float(final_state.position) - before_position
+    engine_order = _engine_order_snapshot(
+        hbt=hbt,
+        order_id=order_id,
+        submit_result_code=submit_result_code,
+    )
     implied_avg_fill_price = (
         trading_value_delta / trading_volume_delta
         if trading_volume_delta > 0
@@ -558,6 +600,7 @@ def _execute_single_mechanical_probe(
         response_received=response_received,
         filled=fill_count_delta > 0,
         reached_end=reached_end,
+        submit_result_code=submit_result_code,
         timeout_count=timeout_count,
         feed_event_count=feed_event_count,
         submit_after_feed_events=submit_after_feed_events,
@@ -574,6 +617,11 @@ def _execute_single_mechanical_probe(
         trading_value_delta=trading_value_delta,
         fee_delta=fee_delta,
         implied_avg_fill_price=implied_avg_fill_price,
+        engine_order_status_code=engine_order["status_code"],
+        engine_order_status=engine_order["status"],
+        engine_order_lifecycle=engine_order["lifecycle"],
+        engine_order_leaves_qty=engine_order["leaves_qty"],
+        engine_order_exec_qty=engine_order["exec_qty"],
         terminal_position=float(final_state.position),
     )
 
@@ -590,6 +638,91 @@ def _submit_after_feed_events(
     if family == "crossing_taker":
         return config.crossing_taker_submit_after_feed_events
     raise ValueError(f"unsupported mechanical probe family: {family}")
+
+
+def _engine_order_snapshot(
+    *,
+    hbt,
+    order_id: int,
+    submit_result_code: int | None,
+) -> dict[str, int | float | str | None]:
+    order = hbt.orders(0).get(order_id)
+    status_code = int(order.status) if order is not None else None
+    leaves_qty = float(order.leaves_qty) if order is not None else None
+    exec_qty = float(order.exec_qty) if order is not None else None
+    status = _engine_order_status_label(status_code)
+    return {
+        "status_code": status_code,
+        "status": status,
+        "lifecycle": _engine_order_lifecycle(
+            submit_result_code=submit_result_code,
+            status_code=status_code,
+            leaves_qty=leaves_qty,
+        ),
+        "leaves_qty": leaves_qty,
+        "exec_qty": exec_qty,
+    }
+
+
+def _engine_order_status_label(
+    status_code: int | None,
+) -> Literal[
+    "new",
+    "expired",
+    "filled",
+    "canceled",
+    "partially_filled",
+    "rejected",
+    "unknown",
+]:
+    if status_code == NEW:
+        return "new"
+    if status_code == EXPIRED:
+        return "expired"
+    if status_code == FILLED:
+        return "filled"
+    if status_code == CANCELED:
+        return "canceled"
+    if status_code == PARTIALLY_FILLED:
+        return "partially_filled"
+    if status_code == REJECTED:
+        return "rejected"
+    return "unknown"
+
+
+def _engine_order_lifecycle(
+    *,
+    submit_result_code: int | None,
+    status_code: int | None,
+    leaves_qty: float | None,
+) -> Literal[
+    "not_submitted",
+    "accepted",
+    "working",
+    "filled",
+    "partially_filled",
+    "canceled",
+    "expired",
+    "rejected",
+    "unknown",
+]:
+    if submit_result_code is None:
+        return "not_submitted"
+    if submit_result_code != 0:
+        return "rejected"
+    if status_code == NEW:
+        return "working" if leaves_qty is not None and leaves_qty > 0 else "accepted"
+    if status_code == EXPIRED:
+        return "expired"
+    if status_code == FILLED:
+        return "filled"
+    if status_code == CANCELED:
+        return "canceled"
+    if status_code == PARTIALLY_FILLED:
+        return "partially_filled"
+    if status_code == REJECTED:
+        return "rejected"
+    return "accepted" if status_code is None else "unknown"
 
 
 def _probe_submit_price(

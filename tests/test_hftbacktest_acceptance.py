@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import math
 
+from hftbacktest.order import FILLED, NEW
+
 from statestrike.exports import export_hftbacktest_npz
 from statestrike.hftbacktest_acceptance import (
     HftbacktestAcceptanceConfig,
@@ -111,6 +113,11 @@ def test_hftbacktest_mechanical_fill_probe_report_separates_probe_families(
         assert probe.submit_after_feed_events == 1
         assert probe.submit_feed_event_count is not None
         assert probe.submit_feed_event_count >= probe.submit_after_feed_events
+        assert probe.engine_order_status_code in {NEW, FILLED}
+        assert probe.engine_order_status in {"new", "filled"}
+        assert probe.engine_order_lifecycle in {"working", "filled"}
+        assert probe.engine_order_leaves_qty is not None
+        assert probe.engine_order_exec_qty is not None
 
     no_fill = next(
         probe
@@ -122,6 +129,11 @@ def test_hftbacktest_mechanical_fill_probe_report_separates_probe_families(
     assert no_fill.filled is False
     assert no_fill.fill_count_delta == 0
     assert no_fill.terminal_position == 0.0
+    assert no_fill.engine_order_status_code == NEW
+    assert no_fill.engine_order_status == "new"
+    assert no_fill.engine_order_lifecycle == "working"
+    assert no_fill.engine_order_leaves_qty == no_fill.order_qty
+    assert no_fill.engine_order_exec_qty == 0.0
 
     sell_no_fill = next(
         probe
@@ -133,6 +145,11 @@ def test_hftbacktest_mechanical_fill_probe_report_separates_probe_families(
     assert sell_no_fill.filled is False
     assert sell_no_fill.fill_count_delta == 0
     assert sell_no_fill.terminal_position == 0.0
+    assert sell_no_fill.engine_order_status_code == NEW
+    assert sell_no_fill.engine_order_status == "new"
+    assert sell_no_fill.engine_order_lifecycle == "working"
+    assert sell_no_fill.engine_order_leaves_qty == sell_no_fill.order_qty
+    assert sell_no_fill.engine_order_exec_qty == 0.0
 
     passive = next(
         probe
@@ -158,6 +175,11 @@ def test_hftbacktest_mechanical_fill_probe_report_separates_probe_families(
     assert crossing.implied_avg_fill_price is not None
     assert crossing.implied_avg_fill_price > 0
     assert crossing.terminal_position == crossing.signed_fill_qty
+    assert crossing.engine_order_status_code == FILLED
+    assert crossing.engine_order_status == "filled"
+    assert crossing.engine_order_lifecycle == "filled"
+    assert crossing.engine_order_leaves_qty == 0.0
+    assert crossing.engine_order_exec_qty == crossing.order_qty
     assert len(report.fill_ledger) >= 1
 
     sell_crossing = next(
@@ -175,6 +197,11 @@ def test_hftbacktest_mechanical_fill_probe_report_separates_probe_families(
     assert sell_crossing.implied_avg_fill_price > 0
     assert sell_crossing.signed_fill_qty < 0
     assert sell_crossing.terminal_position == sell_crossing.signed_fill_qty
+    assert sell_crossing.engine_order_status_code == FILLED
+    assert sell_crossing.engine_order_status == "filled"
+    assert sell_crossing.engine_order_lifecycle == "filled"
+    assert sell_crossing.engine_order_leaves_qty == 0.0
+    assert sell_crossing.engine_order_exec_qty == sell_crossing.order_qty
 
 
 def test_hftbacktest_mechanical_fill_probe_report_reports_schedule_contract(
