@@ -15,6 +15,7 @@ def test_contracts_document_freezes_core_substrate_terms() -> None:
         "`recv_ts` is a legacy/reporting field",
         "`substrate_ready`",
         "`nautilus_baseline_ready`",
+        "`nautilus_baseline_candidate`",
         "`funding_aware_ready`",
         "`enrichment_source`",
         "`enrichment_asof_ts`",

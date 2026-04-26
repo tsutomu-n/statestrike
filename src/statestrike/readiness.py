@@ -21,6 +21,7 @@ from statestrike.storage import _parquet_source
 ReadinessProfileName = Literal[
     "substrate_ready",
     "nautilus_baseline_ready",
+    "nautilus_baseline_candidate",
     "funding_aware_ready",
 ]
 
@@ -33,6 +34,8 @@ class ReadinessProfile(BaseModel):
     required_truth_exports: tuple[str, ...] = ()
     required_corrected_exports: tuple[str, ...] = ()
     funding_required: bool = True
+    allowed_warning_reasons: tuple[str, ...] = ()
+    baseline_input_manifest_required: bool = False
 
     @classmethod
     def substrate_ready(cls) -> "ReadinessProfile":
@@ -60,6 +63,25 @@ class ReadinessProfile(BaseModel):
             required_truth_exports=("nautilus",),
             required_corrected_exports=("hftbacktest",),
             funding_required=False,
+        )
+
+    @classmethod
+    def nautilus_baseline_candidate(cls) -> "ReadinessProfile":
+        return cls(
+            name="nautilus_baseline_candidate",
+            required_normalized_tables=(
+                "trades",
+                "book_events",
+                "book_levels",
+                "asset_ctx",
+            ),
+            required_truth_exports=("nautilus",),
+            funding_required=False,
+            allowed_warning_reasons=(
+                "exchange_sorted_recv_inversion_observed",
+                "session_replay_duplicate_trade_observed",
+            ),
+            baseline_input_manifest_required=True,
         )
 
     @classmethod
@@ -232,6 +254,23 @@ def run_backtest_readiness(
         blocking_reasons.append("truth_corrected_mixed")
     if export_contract_invalid_symbols:
         blocking_reasons.append("export_contract_invalid")
+    if readiness_profile.allowed_warning_reasons:
+        allowed_warning_reasons = set(readiness_profile.allowed_warning_reasons)
+        disallowed_warning_reasons = tuple(
+            reason for reason in warning_reasons if reason not in allowed_warning_reasons
+        )
+        if disallowed_warning_reasons:
+            blocking_reasons.append("candidate_disallowed_warning")
+    if (
+        readiness_profile.baseline_input_manifest_required
+        and "session_replay_duplicate_trade_observed" in warning_reasons
+        and not _baseline_input_session_replay_dedup_applied(
+            root=root,
+            trading_date=trading_date,
+            symbols=requested_symbols,
+        )
+    ):
+        blocking_reasons.append("baseline_input_session_replay_dedup_missing")
 
     status: Literal["ready", "warning", "blocked"]
     if blocking_reasons:
@@ -276,6 +315,8 @@ def _resolve_profile(
         return ReadinessProfile.substrate_ready()
     if profile_name == "nautilus_baseline_ready":
         return ReadinessProfile.nautilus_baseline_ready()
+    if profile_name == "nautilus_baseline_candidate":
+        return ReadinessProfile.nautilus_baseline_candidate()
     if profile_name == "funding_aware_ready":
         return ReadinessProfile.funding_aware_ready()
     raise ValueError(f"unknown readiness profile: {profile_name}")
@@ -415,6 +456,35 @@ def _funding_sidecar_path(*, root: Path, trading_date: date) -> Path:
         / "funding_schedule"
         / f"date={trading_date.isoformat()}"
         / "predicted_funding.parquet"
+    )
+
+
+def _baseline_input_session_replay_dedup_applied(
+    *,
+    root: Path,
+    trading_date: date,
+    symbols: tuple[str, ...],
+) -> bool:
+    path = (
+        root
+        / "baseline_input"
+        / f"date={trading_date.isoformat()}"
+        / "baseline_input_manifest.json"
+    )
+    if not path.exists():
+        return False
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return False
+    manifest_symbols = {
+        str(symbol).upper() for symbol in payload.get("symbols", [])
+    }
+    requested_symbols = {symbol.upper() for symbol in symbols}
+    return (
+        bool(payload.get("session_replay_dedup_applied"))
+        and requested_symbols <= manifest_symbols
+        and payload.get("removed_duplicate_classification") == "session_replay"
     )
 
 
@@ -566,6 +636,23 @@ def _export_contract_is_valid_for_profile(
     *,
     profile: ReadinessProfile,
 ) -> bool:
-    if profile.required_truth_exports or profile.required_corrected_exports:
-        return _export_contract_is_valid(report)
+    for target in profile.required_truth_exports:
+        artifact = report.truth_exports.get(target)
+        if artifact is None:
+            return False
+        if artifact.category != "truth" or not artifact.truth_preserving:
+            return False
+        if artifact.correction_applied:
+            return False
+    for target in profile.required_corrected_exports:
+        artifact = report.corrected_exports.get(target)
+        if artifact is None:
+            return False
+        if artifact.category != "corrected" or artifact.truth_preserving:
+            return False
+        if not artifact.correction_applied:
+            return False
+    if profile.required_truth_exports and profile.required_corrected_exports:
+        if set(profile.required_truth_exports) & set(profile.required_corrected_exports):
+            return False
     return True

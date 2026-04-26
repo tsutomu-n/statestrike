@@ -47,6 +47,10 @@ Readiness is profile-aware:
 - `substrate_ready`: normalized substrate completeness without requiring funding.
 - `nautilus_baseline_ready`: truth/corrected export completeness for baseline
   crossing; funding gaps are warnings when the baseline ignores funding.
+- `nautilus_baseline_candidate`: derived Nautilus-only baseline input that keeps
+  strict `ready` semantics intact while allowing only explicitly approved
+  warnings. Session-boundary replay duplicates require
+  `baseline_input_manifest.session_replay_dedup_applied = true`.
 - `funding_aware_ready`: full funding-aware readiness; missing funding enrichment
   is blocking.
 

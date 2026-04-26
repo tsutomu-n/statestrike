@@ -12,7 +12,11 @@ import pandas as pd
 from pydantic import BaseModel, ConfigDict, Field
 
 from statestrike.paths import build_export_path
-from statestrike.readiness import BacktestReadinessReport, run_backtest_readiness
+from statestrike.readiness import (
+    BacktestReadinessReport,
+    ReadinessProfileName,
+    run_backtest_readiness,
+)
 
 
 class NautilusBaselineResult(BaseModel):
@@ -39,13 +43,14 @@ def run_nautilus_simple_momentum(
     root: Path,
     trading_date: date,
     symbol: str,
+    profile: ReadinessProfileName = "nautilus_baseline_candidate",
 ) -> NautilusBaselineResult:
     symbol = symbol.upper()
     readiness_report = run_backtest_readiness(
         root=root,
         trading_date=trading_date,
         symbols=(symbol,),
-        profile="nautilus_baseline_ready",
+        profile=profile,
     )
     if readiness_report.status == "blocked":
         raise ValueError(

@@ -95,7 +95,7 @@ def test_nautilus_simple_momentum_runs_from_truth_export(tmp_path) -> None:
 
     assert result.strategy_name == "nautilus_simple_momentum"
     assert result.symbol == "BTC"
-    assert result.dataset_profile == "nautilus_baseline_ready"
+    assert result.dataset_profile == "nautilus_baseline_candidate"
     assert result.readiness_status == "ready"
     assert result.funding_treatment == "ignored"
     assert result.trade_count == 3

@@ -35,11 +35,15 @@ def run_sanity_noop(
     root: Path,
     trading_date: date,
     symbols: tuple[str, ...],
+    profile: ReadinessProfileName = "funding_aware_ready",
+    allow_warning: bool = False,
 ) -> BacktestRunResult:
     readiness_report = _require_readiness(
         root=root,
         trading_date=trading_date,
         symbols=symbols,
+        profile=profile,
+        allow_warning=allow_warning,
     )
     return BacktestRunResult(
         name="sanity_noop",
@@ -56,14 +60,16 @@ def run_sanity_single_trade_roundtrip(
     root: Path,
     trading_date: date,
     symbol: str,
+    profile: ReadinessProfileName = "nautilus_baseline_ready",
+    allow_warning: bool = True,
 ) -> BacktestRunResult:
     symbol = symbol.upper()
     readiness_report = _require_readiness(
         root=root,
         trading_date=trading_date,
         symbols=(symbol,),
-        profile="nautilus_baseline_ready",
-        allow_warning=True,
+        profile=profile,
+        allow_warning=allow_warning,
     )
     trades = _read_trade_frame(
         root=root,
@@ -91,14 +97,16 @@ def run_baseline_simple_momentum(
     root: Path,
     trading_date: date,
     symbol: str,
+    profile: ReadinessProfileName = "nautilus_baseline_ready",
+    allow_warning: bool = True,
 ) -> BacktestRunResult:
     symbol = symbol.upper()
     readiness_report = _require_readiness(
         root=root,
         trading_date=trading_date,
         symbols=(symbol,),
-        profile="nautilus_baseline_ready",
-        allow_warning=True,
+        profile=profile,
+        allow_warning=allow_warning,
     )
     trades = _read_trade_frame(
         root=root,
