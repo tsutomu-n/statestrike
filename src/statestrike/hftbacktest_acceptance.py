@@ -91,7 +91,7 @@ class HftbacktestFillLedgerEntry(BaseModel):
     probe_name: str
     family: Literal["passive_maker", "crossing_taker"]
     order_id: int
-    side: Literal["buy"]
+    side: Literal["buy", "sell"]
     fill_count: int = Field(ge=1)
     signed_fill_qty: float
     trading_volume: float = Field(gt=0)
@@ -106,7 +106,7 @@ class HftbacktestMechanicalProbeResult(BaseModel):
 
     probe_name: str
     family: Literal["no_fill_passive", "passive_maker", "crossing_taker"]
-    side: Literal["buy"]
+    side: Literal["buy", "sell"]
     order_id: int
     price_rule: str
     time_in_force: Literal["GTX", "GTC", "IOC"]
@@ -201,11 +201,12 @@ def run_hftbacktest_mechanical_fill_probe_report(
             config=config,
             probe_name=probe_name,
             family=family,
+            side=side,
             order_id=order_id,
             price_rule=price_rule,
             time_in_force=time_in_force,
         )
-        for probe_name, family, order_id, price_rule, time_in_force in _mechanical_probe_specs(
+        for probe_name, family, side, order_id, price_rule, time_in_force in _mechanical_probe_specs(
             config
         )
     )
@@ -340,15 +341,26 @@ def _run_replay(
 
 def _mechanical_probe_specs(
     config: HftbacktestMechanicalProbeConfig,
-) -> tuple[tuple[str, str, int, str, int], ...]:
-    specs: list[tuple[str, str, int, str, int]] = []
+) -> tuple[tuple[str, str, str, int, str, int], ...]:
+    specs: list[tuple[str, str, str, int, str, int]] = []
     if config.run_no_fill_passive:
         specs.append(
             (
                 "far_passive_buy_no_fill",
                 "no_fill_passive",
+                "buy",
                 10_001,
                 "far_below_best_bid",
+                GTX,
+            )
+        )
+        specs.append(
+            (
+                "far_passive_sell_no_fill",
+                "no_fill_passive",
+                "sell",
+                20_001,
+                "far_above_best_ask",
                 GTX,
             )
         )
@@ -357,8 +369,19 @@ def _mechanical_probe_specs(
             (
                 "best_bid_post_only_buy",
                 "passive_maker",
+                "buy",
                 10_002,
                 "at_best_bid",
+                GTX,
+            )
+        )
+        specs.append(
+            (
+                "best_ask_post_only_sell",
+                "passive_maker",
+                "sell",
+                20_002,
+                "at_best_ask",
                 GTX,
             )
         )
@@ -367,8 +390,19 @@ def _mechanical_probe_specs(
             (
                 "crossing_ioc_buy",
                 "crossing_taker",
+                "buy",
                 10_003,
                 "at_best_ask_ioc",
+                IOC,
+            )
+        )
+        specs.append(
+            (
+                "crossing_ioc_sell",
+                "crossing_taker",
+                "sell",
+                20_003,
+                "at_best_bid_ioc",
                 IOC,
             )
         )
@@ -382,6 +416,7 @@ def _run_single_mechanical_probe(
     config: HftbacktestMechanicalProbeConfig,
     probe_name: str,
     family: str,
+    side: str,
     order_id: int,
     price_rule: str,
     time_in_force: int,
@@ -395,6 +430,7 @@ def _run_single_mechanical_probe(
             config=config,
             probe_name=probe_name,
             family=family,
+            side=side,
             order_id=order_id,
             price_rule=price_rule,
             time_in_force=time_in_force,
@@ -411,6 +447,7 @@ def _execute_single_mechanical_probe(
     config: HftbacktestMechanicalProbeConfig,
     probe_name: str,
     family: str,
+    side: str,
     order_id: int,
     price_rule: str,
     time_in_force: int,
@@ -466,14 +503,13 @@ def _execute_single_mechanical_probe(
         before_value = float(state_values.trading_value)
         before_fee = float(state_values.fee)
         submit_ts_ns = _optional_nonnegative_timestamp(hbt.current_timestamp)
-        submit_result = hbt.submit_buy_order(
-            0,
-            order_id,
-            submit_price,
-            config.order_qty,
-            time_in_force,
-            LIMIT,
-            True,
+        submit_result = _submit_probe_order(
+            hbt=hbt,
+            side=side,
+            order_id=order_id,
+            price=submit_price,
+            qty=config.order_qty,
+            time_in_force=time_in_force,
         )
         submitted = submit_result == 0
         order_latency = hbt.order_latency(0)
@@ -500,7 +536,7 @@ def _execute_single_mechanical_probe(
     return HftbacktestMechanicalProbeResult(
         probe_name=probe_name,
         family=family,
-        side="buy",
+        side=side,
         order_id=order_id,
         price_rule=price_rule,
         time_in_force=_time_in_force_label(time_in_force),
@@ -539,11 +575,33 @@ def _probe_submit_price(
             config.tick_size,
             best_bid - config.far_passive_distance_ticks * config.tick_size,
         )
+    if price_rule == "far_above_best_ask":
+        return best_ask + config.far_passive_distance_ticks * config.tick_size
     if price_rule == "at_best_bid":
         return best_bid
+    if price_rule == "at_best_ask":
+        return best_ask
     if price_rule == "at_best_ask_ioc":
         return best_ask
+    if price_rule == "at_best_bid_ioc":
+        return best_bid
     raise ValueError(f"unsupported mechanical probe price rule: {price_rule}")
+
+
+def _submit_probe_order(
+    *,
+    hbt,
+    side: str,
+    order_id: int,
+    price: float,
+    qty: float,
+    time_in_force: int,
+) -> int:
+    if side == "buy":
+        return hbt.submit_buy_order(0, order_id, price, qty, time_in_force, LIMIT, True)
+    if side == "sell":
+        return hbt.submit_sell_order(0, order_id, price, qty, time_in_force, LIMIT, True)
+    raise ValueError(f"unsupported mechanical probe side: {side}")
 
 
 def _has_finite_positive_bbo(depth) -> bool:
@@ -601,11 +659,21 @@ def _mechanical_probe_blocking_reasons(
     probes: tuple[HftbacktestMechanicalProbeResult, ...],
 ) -> tuple[str, ...]:
     reasons: list[str] = []
-    by_family = {probe.family: probe for probe in probes}
-    required = {"no_fill_passive", "passive_maker", "crossing_taker"}
-    missing = sorted(required - set(by_family))
+    by_family_side = {(probe.family, probe.side): probe for probe in probes}
+    required = {
+        ("no_fill_passive", "buy"),
+        ("passive_maker", "buy"),
+        ("crossing_taker", "buy"),
+        ("no_fill_passive", "sell"),
+        ("passive_maker", "sell"),
+        ("crossing_taker", "sell"),
+    }
+    missing = sorted(required - set(by_family_side))
     if missing:
-        reasons.append(f"missing_probe_families:{','.join(missing)}")
+        reasons.append(
+            "missing_probe_families:"
+            + ",".join(f"{family}:{side}" for family, side in missing)
+        )
     for probe in probes:
         if not probe.submitted:
             reasons.append(f"{probe.probe_name}:not_submitted")
@@ -613,12 +681,13 @@ def _mechanical_probe_blocking_reasons(
             reasons.append(f"{probe.probe_name}:response_missing")
         if probe.trading_volume_delta < 0 or probe.trading_value_delta < 0:
             reasons.append(f"{probe.probe_name}:negative_fill_metric")
-    no_fill = by_family.get("no_fill_passive")
-    if no_fill is not None and no_fill.filled:
-        reasons.append("no_fill_passive:unexpected_fill")
-    crossing = by_family.get("crossing_taker")
-    if crossing is not None and not crossing.filled:
-        reasons.append("crossing_taker:not_filled")
+    for side in ("buy", "sell"):
+        no_fill = by_family_side.get(("no_fill_passive", side))
+        if no_fill is not None and no_fill.filled:
+            reasons.append(f"no_fill_passive:{side}:unexpected_fill")
+        crossing = by_family_side.get(("crossing_taker", side))
+        if crossing is not None and not crossing.filled:
+            reasons.append(f"crossing_taker:{side}:not_filled")
     return tuple(reasons)
 
 

@@ -99,26 +99,52 @@ def test_hftbacktest_mechanical_fill_probe_report_separates_probe_families(
     assert report.calibration_claimed is False
     assert report.fill_realism_claimed is False
     assert report.strategy_edge_claimed is False
-    assert {probe.family for probe in report.probes} == {
-        "no_fill_passive",
-        "passive_maker",
-        "crossing_taker",
+    assert {(probe.family, probe.side) for probe in report.probes} == {
+        ("no_fill_passive", "buy"),
+        ("passive_maker", "buy"),
+        ("crossing_taker", "buy"),
+        ("no_fill_passive", "sell"),
+        ("passive_maker", "sell"),
+        ("crossing_taker", "sell"),
     }
 
-    no_fill = next(probe for probe in report.probes if probe.family == "no_fill_passive")
+    no_fill = next(
+        probe
+        for probe in report.probes
+        if probe.family == "no_fill_passive" and probe.side == "buy"
+    )
     assert no_fill.submitted is True
     assert no_fill.response_received is True
     assert no_fill.filled is False
     assert no_fill.fill_count_delta == 0
     assert no_fill.terminal_position == 0.0
 
-    passive = next(probe for probe in report.probes if probe.family == "passive_maker")
+    sell_no_fill = next(
+        probe
+        for probe in report.probes
+        if probe.family == "no_fill_passive" and probe.side == "sell"
+    )
+    assert sell_no_fill.submitted is True
+    assert sell_no_fill.response_received is True
+    assert sell_no_fill.filled is False
+    assert sell_no_fill.fill_count_delta == 0
+    assert sell_no_fill.terminal_position == 0.0
+
+    passive = next(
+        probe
+        for probe in report.probes
+        if probe.family == "passive_maker" and probe.side == "buy"
+    )
     assert passive.submitted is True
     assert passive.response_received is True
     assert passive.fill_count_delta >= 0
     assert math.isfinite(passive.fee_delta)
 
-    crossing = next(probe for probe in report.probes if probe.family == "crossing_taker")
+    crossing = next(
+        probe
+        for probe in report.probes
+        if probe.family == "crossing_taker" and probe.side == "buy"
+    )
     assert crossing.submitted is True
     assert crossing.response_received is True
     assert crossing.filled is True
@@ -129,6 +155,22 @@ def test_hftbacktest_mechanical_fill_probe_report_separates_probe_families(
     assert crossing.implied_avg_fill_price > 0
     assert crossing.terminal_position == crossing.signed_fill_qty
     assert len(report.fill_ledger) >= 1
+
+    sell_crossing = next(
+        probe
+        for probe in report.probes
+        if probe.family == "crossing_taker" and probe.side == "sell"
+    )
+    assert sell_crossing.submitted is True
+    assert sell_crossing.response_received is True
+    assert sell_crossing.filled is True
+    assert sell_crossing.fill_count_delta >= 1
+    assert sell_crossing.trading_volume_delta > 0
+    assert sell_crossing.trading_value_delta > 0
+    assert sell_crossing.implied_avg_fill_price is not None
+    assert sell_crossing.implied_avg_fill_price > 0
+    assert sell_crossing.signed_fill_qty < 0
+    assert sell_crossing.terminal_position == sell_crossing.signed_fill_qty
 
 
 def test_hftbacktest_mechanical_fill_probe_report_is_deterministic(tmp_path) -> None:
