@@ -6,6 +6,7 @@ from datetime import date
 from pathlib import Path
 
 import pandas as pd
+import pytest
 
 from statestrike.baseline_input import build_nautilus_baseline_input
 from statestrike.collector import CollectorConfig
@@ -103,10 +104,23 @@ def test_baseline_input_dedups_session_replay_without_mutating_source(
     )
 
     assert result.manifest.session_replay_dedup_applied is True
+    assert result.manifest.schema_version == "baseline_input_manifest.v1"
+    assert result.manifest.profile == "nautilus_baseline_candidate"
+    assert result.manifest.source_sessions == (
+        "session-source-0001",
+        "session-source-0002",
+    )
     assert result.manifest.removed_duplicate_classification == "session_replay"
     assert result.manifest.removed_duplicate_count == 2
     assert result.manifest.unexplained_duplicate_count == 0
     assert result.manifest.input_sessions == ("session-source-0001", "session-source-0002")
+    assert result.manifest.assumed_taker_fee_rate == pytest.approx(0.0004)
+    assert result.manifest.assumed_maker_fee_rate == pytest.approx(0.0004)
+    assert result.manifest.fill_model_name == "project_taker_fill_v1"
+    assert result.manifest.slippage_assumption == pytest.approx(0.0)
+    assert result.manifest.funding_treatment == "ignored"
+    assert result.manifest.source_capture_log_row_count == 6
+    assert result.manifest.derived_trade_row_count == 2
     assert result.manifest_path.exists()
 
     source_trades = pd.concat(
@@ -154,3 +168,47 @@ def test_baseline_input_dedups_session_replay_without_mutating_source(
     assert candidate_report.status == "ready"
     assert candidate_report.blocking_reasons == ()
     assert candidate_report.profile.name == "nautilus_baseline_candidate"
+
+
+def test_baseline_input_strict_rejects_unexplained_duplicate_trades(tmp_path) -> None:
+    source_root = tmp_path / "source"
+    output_root = tmp_path / "candidate"
+    trading_date = date(2026, 4, 23)
+    messages = [
+        load_fixture("l2_book.json"),
+        load_fixture("trades.json"),
+        load_fixture("active_asset_ctx.json"),
+    ]
+    run_smoke_batch(
+        root=source_root,
+        trading_date=trading_date,
+        messages=copy.deepcopy(messages),
+        config=baseline_config(),
+        capture_session_id="session-source-0001",
+        batch_id="0001",
+        recv_ts_start=1713818880100,
+    )
+    run_smoke_batch(
+        root=source_root,
+        trading_date=trading_date,
+        messages=copy.deepcopy(messages),
+        config=baseline_config(),
+        capture_session_id="session-source-0001",
+        batch_id="0002",
+        recv_ts_start=1713819780100,
+    )
+    enrich_funding_schedule_from_predicted_fundings(
+        root=source_root,
+        trading_date=trading_date,
+        symbols=("BTC",),
+        predicted_fundings=PREDICTED_FUNDINGS,
+        enrichment_asof_ts=1713819000000,
+    )
+
+    with pytest.raises(ValueError, match="unexplained duplicate trades"):
+        build_nautilus_baseline_input(
+            source_root=source_root,
+            output_root=output_root,
+            trading_date=trading_date,
+            symbols=("BTC",),
+        )
