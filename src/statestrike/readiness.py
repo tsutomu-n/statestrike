@@ -212,8 +212,11 @@ def run_backtest_readiness(
         warning_reasons.append("quarantine_rate_over_warning_threshold")
     if quality_report.unexplained_duplicate_trade_count > thresholds.max_duplicate_trade_count:
         blocking_reasons.append("unexplained_duplicate_trade_count_over_threshold")
-    elif quality_report.reconnect_replay_duplicate_trade_count > 0:
-        warning_reasons.append("reconnect_replay_duplicate_trade_observed")
+    else:
+        if quality_report.reconnect_replay_duplicate_trade_count > 0:
+            warning_reasons.append("reconnect_replay_duplicate_trade_observed")
+        if quality_report.session_replay_duplicate_trade_count > 0:
+            warning_reasons.append("session_replay_duplicate_trade_observed")
     if (
         quality_report.non_recoverable_book_gap_count
         > thresholds.max_non_recoverable_book_gap_count

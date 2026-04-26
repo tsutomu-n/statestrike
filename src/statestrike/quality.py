@@ -35,6 +35,7 @@ class QualityAuditReport(BaseModel):
     duplicate_trade_count: int = Field(ge=0)
     raw_duplicate_trade_count: int = Field(ge=0)
     reconnect_replay_duplicate_trade_count: int = Field(ge=0)
+    session_replay_duplicate_trade_count: int = Field(default=0, ge=0)
     unexplained_duplicate_trade_count: int = Field(ge=0)
     book_continuity_gap_count: int = Field(ge=0)
     recoverable_book_gap_count: int = Field(ge=0)
@@ -210,6 +211,7 @@ def run_quality_audit(
         (
             raw_duplicate_trade_count,
             reconnect_replay_duplicate_trade_count,
+            session_replay_duplicate_trade_count,
             unexplained_duplicate_trade_count,
         ) = _classify_duplicate_trades(
             connection=connection,
@@ -338,6 +340,7 @@ def run_quality_audit(
         duplicate_trade_count=raw_duplicate_trade_count,
         raw_duplicate_trade_count=raw_duplicate_trade_count,
         reconnect_replay_duplicate_trade_count=reconnect_replay_duplicate_trade_count,
+        session_replay_duplicate_trade_count=session_replay_duplicate_trade_count,
         unexplained_duplicate_trade_count=unexplained_duplicate_trade_count,
         book_continuity_gap_count=book_continuity_gap_count,
         recoverable_book_gap_count=recoverable_book_gap_count,
@@ -580,16 +583,17 @@ def _classify_duplicate_trades(
     *,
     connection: duckdb.DuckDBPyConnection,
     files: list[Path],
-) -> tuple[int, int, int]:
+) -> tuple[int, int, int, int]:
     if not files:
-        return (0, 0, 0)
+        return (0, 0, 0, 0)
     source = _parquet_source(files)
     rows = connection.execute(
         f"""
         SELECT
             dedup_hash,
             COUNT(*) AS duplicate_count,
-            COUNT(DISTINCT reconnect_epoch) AS reconnect_epoch_count
+            COUNT(DISTINCT reconnect_epoch) AS reconnect_epoch_count,
+            COUNT(DISTINCT capture_session_id) AS capture_session_count
         FROM {source}
         GROUP BY 1
         HAVING COUNT(*) > 1
@@ -597,20 +601,27 @@ def _classify_duplicate_trades(
     ).fetchall()
     raw_duplicate_count = 0
     reconnect_replay_duplicate_count = 0
+    session_replay_duplicate_count = 0
     unexplained_duplicate_count = 0
-    for _, duplicate_count, reconnect_epoch_count in rows:
+    for _, duplicate_count, reconnect_epoch_count, capture_session_count in rows:
         duplicate_excess = int(duplicate_count) - 1
         raw_duplicate_count += duplicate_excess
         # A duplicate spanning reconnect epochs is treated as replay explainable:
         # the venue/runtime may replay recent trades after reconnect. Same-epoch
-        # duplicates remain unexplained and can block readiness.
+        # duplicates spanning campaign sessions are subscription replay explainable:
+        # each session opens a fresh WebSocket subscription, which may replay recent
+        # trades near the session boundary. Same-session duplicates remain
+        # unexplained and can block readiness.
         if int(reconnect_epoch_count) > 1:
             reconnect_replay_duplicate_count += duplicate_excess
+        elif int(capture_session_count) > 1:
+            session_replay_duplicate_count += duplicate_excess
         else:
             unexplained_duplicate_count += duplicate_excess
     return (
         raw_duplicate_count,
         reconnect_replay_duplicate_count,
+        session_replay_duplicate_count,
         unexplained_duplicate_count,
     )
 

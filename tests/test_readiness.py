@@ -482,6 +482,51 @@ def test_backtest_readiness_does_not_block_reconnect_replay_duplicates(
     assert "duplicate_trade_count_over_threshold" not in report.blocking_reasons
 
 
+def test_backtest_readiness_does_not_block_session_replay_duplicates(
+    tmp_path,
+) -> None:
+    messages = [
+        load_fixture("l2_book.json"),
+        load_fixture("trades.json"),
+        load_fixture("active_asset_ctx.json"),
+    ]
+
+    run_smoke_batch(
+        root=tmp_path,
+        trading_date=date(2026, 4, 23),
+        messages=copy.deepcopy(messages),
+        config=readiness_config(),
+        capture_session_id="session-ready-session-replay-duplicates-0001",
+        batch_id="0001",
+        recv_ts_start=1713818880100,
+    )
+    run_smoke_batch(
+        root=tmp_path,
+        trading_date=date(2026, 4, 23),
+        messages=copy.deepcopy(messages),
+        config=readiness_config(),
+        capture_session_id="session-ready-session-replay-duplicates-0002",
+        batch_id="0002",
+        recv_ts_start=1713819780100,
+    )
+    enrich_funding_sidecar(tmp_path, trading_date=date(2026, 4, 23))
+
+    report = run_backtest_readiness(
+        root=tmp_path,
+        trading_date=date(2026, 4, 23),
+        symbols=("BTC",),
+        profile="substrate_ready",
+    )
+
+    assert report.quality_report.raw_duplicate_trade_count == 2
+    assert report.quality_report.reconnect_replay_duplicate_trade_count == 0
+    assert report.quality_report.session_replay_duplicate_trade_count == 2
+    assert report.quality_report.unexplained_duplicate_trade_count == 0
+    assert report.status == "warning"
+    assert "session_replay_duplicate_trade_observed" in report.warning_reasons
+    assert "unexplained_duplicate_trade_count_over_threshold" not in report.blocking_reasons
+
+
 def test_backtest_readiness_blocks_unexplained_duplicates(tmp_path) -> None:
     first_trades = copy.deepcopy(load_fixture("trades.json"))
     duplicated_trades = copy.deepcopy(load_fixture("trades.json"))
@@ -511,6 +556,7 @@ def test_backtest_readiness_blocks_unexplained_duplicates(tmp_path) -> None:
 
     assert report.quality_report.raw_duplicate_trade_count == 2
     assert report.quality_report.reconnect_replay_duplicate_trade_count == 0
+    assert report.quality_report.session_replay_duplicate_trade_count == 0
     assert report.quality_report.unexplained_duplicate_trade_count == 2
     assert report.status == "blocked"
     assert "unexplained_duplicate_trade_count_over_threshold" in report.blocking_reasons

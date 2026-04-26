@@ -981,6 +981,10 @@ def _render_audit_markdown(report: QualityAuditReport) -> str:
             f"{report.reconnect_replay_duplicate_trade_count}"
         ),
         (
+            "- session_replay_duplicate_trade_count: "
+            f"{report.session_replay_duplicate_trade_count}"
+        ),
+        (
             "- unexplained_duplicate_trade_count: "
             f"{report.unexplained_duplicate_trade_count}"
         ),

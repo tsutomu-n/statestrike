@@ -96,6 +96,7 @@ def test_cli_audit_quality_prints_json_report(monkeypatch, tmp_path, capsys) -> 
         duplicate_trade_count=0,
         raw_duplicate_trade_count=0,
         reconnect_replay_duplicate_trade_count=0,
+        session_replay_duplicate_trade_count=0,
         unexplained_duplicate_trade_count=0,
         book_continuity_gap_count=0,
         recoverable_book_gap_count=0,

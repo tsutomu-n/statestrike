@@ -315,6 +315,7 @@ def test_quality_audit_counts_gap_and_duplicate_metrics(tmp_path) -> None:
     assert report.duplicate_trade_count == 1
     assert report.raw_duplicate_trade_count == 1
     assert report.reconnect_replay_duplicate_trade_count == 0
+    assert report.session_replay_duplicate_trade_count == 0
     assert report.unexplained_duplicate_trade_count == 1
     assert report.non_monotonic_exchange_ts_count >= 1
     assert report.non_monotonic_recv_ts_count >= 1
