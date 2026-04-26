@@ -31,15 +31,41 @@ PREDICTED_FUNDINGS = [
         ],
     ]
 ]
+PREDICTED_FUNDINGS_ETH = [
+    [
+        "ETH",
+        [
+            [
+                "HlPerp",
+                {
+                    "fundingRate": "0.000008",
+                    "nextFundingTime": 1713819600000,
+                    "fundingIntervalHours": 1,
+                },
+            ]
+        ],
+    ]
+]
 
 
 def load_fixture(name: str) -> dict:
     return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
 
 
-def adapter_config() -> CollectorConfig:
+def with_symbol(message: dict, symbol: str) -> dict:
+    patched = copy.deepcopy(message)
+    data = patched["data"]
+    if isinstance(data, list):
+        for row in data:
+            row["coin"] = symbol
+    else:
+        data["coin"] = symbol
+    return patched
+
+
+def adapter_config(*, symbol: str = "BTC") -> CollectorConfig:
     return CollectorConfig(
-        allowed_symbols=("BTC",),
+        allowed_symbols=(symbol,),
         source_priority=("ws", "info", "s3", "tardis"),
         market_data_network="mainnet",
         flush_interval_ms=1000,
@@ -53,6 +79,7 @@ def prepare_candidate_dataset(
     tmp_path: Path,
     *,
     prices: tuple[float, ...] = (100.25, 100.50, 100.75),
+    symbol: str = "BTC",
 ) -> Path:
     source_root = tmp_path / "source"
     output_root = tmp_path / "candidate"
@@ -60,7 +87,7 @@ def prepare_candidate_dataset(
     trades = copy.deepcopy(load_fixture("trades.json"))
     trades["data"] = [
         {
-            "coin": "BTC",
+            "coin": symbol,
             "side": "B" if index % 2 == 0 else "A",
             "px": str(price),
             "sz": "0.2",
@@ -73,11 +100,11 @@ def prepare_candidate_dataset(
         root=source_root,
         trading_date=trading_date,
         messages=[
-            load_fixture("l2_book.json"),
+            with_symbol(load_fixture("l2_book.json"), symbol),
             trades,
-            load_fixture("active_asset_ctx.json"),
+            with_symbol(load_fixture("active_asset_ctx.json"), symbol),
         ],
-        config=adapter_config(),
+        config=adapter_config(symbol=symbol),
         capture_session_id="session-adapter",
         batch_id="0001",
         recv_ts_start=1713818880100,
@@ -85,15 +112,17 @@ def prepare_candidate_dataset(
     enrich_funding_schedule_from_predicted_fundings(
         root=source_root,
         trading_date=trading_date,
-        symbols=("BTC",),
-        predicted_fundings=PREDICTED_FUNDINGS,
+        symbols=(symbol,),
+        predicted_fundings=(
+            PREDICTED_FUNDINGS if symbol == "BTC" else PREDICTED_FUNDINGS_ETH
+        ),
         enrichment_asof_ts=1713819000000,
     )
     build_nautilus_baseline_input(
         source_root=source_root,
         output_root=output_root,
         trading_date=trading_date,
-        symbols=("BTC",),
+        symbols=(symbol,),
     )
     return output_root
 
@@ -217,5 +246,32 @@ def test_nautilus_repeated_order_strategy_emits_multiple_orders(tmp_path) -> Non
     assert nautilus["equity_curve"][-1] == pytest.approx(nautilus["net_pnl"])
     assert nautilus["equity_curve_source"] == "PositionClosed.realized_pnl"
     assert result["control_result"]["strategy_name"] == "nautilus_baseline_harness_v1"
+    assert result["parity"]["same_symbol"] is True
+    assert result["parity"]["same_derived_input"] is True
+
+
+def test_nautilus_repeated_order_strategy_accepts_eth_added_symbol(tmp_path) -> None:
+    root = prepare_candidate_dataset(
+        tmp_path,
+        prices=(2000.25, 2000.50, 2000.75, 2001.00, 2001.25, 2001.50),
+        symbol="ETH",
+    )
+
+    result = run_strategy_adapter_in_child(
+        root=root,
+        trading_date=date(2026, 4, 24),
+        symbol="ETH",
+        tmp_path=tmp_path,
+        runner_name="run_nautilus_repeated_order_strategy_harness",
+        extra_kwargs={"trade_size": "1", "max_roundtrips": 2},
+    )
+
+    assert result["strategy_name"] == "nautilus_simple_momentum_strategy"
+    assert result["symbol"] == "ETH"
+    nautilus = result["nautilus_result"]
+    assert nautilus["input_trade_tick_count"] == 6
+    assert nautilus["executed_order_count"] > 2
+    assert nautilus["fill_event_count"] > 2
+    assert nautilus["fee_cost"] > 0
     assert result["parity"]["same_symbol"] is True
     assert result["parity"]["same_derived_input"] is True

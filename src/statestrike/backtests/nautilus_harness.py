@@ -7,7 +7,7 @@ from typing import Literal
 
 from nautilus_trader.backtest.node import BacktestNode
 from nautilus_trader.config import BacktestDataConfig, BacktestRunConfig, BacktestVenueConfig
-from nautilus_trader.model.currencies import BTC, USD
+from nautilus_trader.model.currencies import BTC, ETH, USD
 from nautilus_trader.model.data import TradeTick
 from nautilus_trader.model.identifiers import InstrumentId, Symbol, Venue
 from nautilus_trader.model.instruments import CryptoPerpetual
@@ -321,15 +321,20 @@ def _hyperliquid_perpetual_instrument(
     ts_event: int,
     ts_init: int,
 ) -> CryptoPerpetual:
-    if symbol != "BTC":
-        raise ValueError("P4-11 Nautilus harness v1 is intentionally BTC-only")
+    supported_base_currencies = {
+        "BTC": BTC,
+        "ETH": ETH,
+    }
+    symbol = symbol.upper()
+    if symbol not in supported_base_currencies:
+        raise ValueError("Nautilus harness currently supports only BTC and ETH")
     return CryptoPerpetual(
         instrument_id=InstrumentId(
-            symbol=Symbol("BTC-USD-PERP"),
+            symbol=Symbol(f"{symbol}-USD-PERP"),
             venue=Venue("HYPERLIQUID"),
         ),
-        raw_symbol=Symbol("BTC"),
-        base_currency=BTC,
+        raw_symbol=Symbol(symbol),
+        base_currency=supported_base_currencies[symbol],
         quote_currency=USD,
         settlement_currency=USD,
         is_inverse=False,
