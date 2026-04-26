@@ -296,12 +296,14 @@ def test_repeated_order_strategy_with_funding_pnl_keeps_net_fields_separate(
     assert result["dataset_profile"] == "nautilus_funding_candidate"
     assert result["funding_treatment"] == "ex_post_ledger"
     assert result["funding_ledger"]["source_type"] == "fundingHistory"
+    assert result["funding_ledger"]["entry_count"] == 0
     assert result["baseline_result"]["nautilus_result"]["funding_treatment"] == "ignored"
     augmented = result["augmented_pnl"]
     nautilus = result["baseline_result"]["nautilus_result"]
     assert augmented["gross_pnl_ex_funding"] == pytest.approx(nautilus["gross_pnl"])
     assert augmented["fee_cost"] == pytest.approx(nautilus["fee_cost"])
     assert augmented["net_pnl_ex_funding"] == pytest.approx(nautilus["net_pnl"])
+    assert augmented["funding_pnl"] == pytest.approx(0.0)
     assert augmented["net_pnl_after_funding"] == pytest.approx(
         augmented["net_pnl_ex_funding"] + augmented["funding_pnl"]
     )

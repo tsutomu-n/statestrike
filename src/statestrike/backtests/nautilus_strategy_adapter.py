@@ -576,6 +576,7 @@ def _position_intervals_from_orders(
     orders: tuple[Any, ...],
     symbol: str,
 ) -> tuple[FundingPositionInterval, ...]:
+    zero_tolerance = 1e-12
     fills: list[tuple[int, int, float]] = []
     sequence = 0
     for order in orders:
@@ -583,7 +584,10 @@ def _position_intervals_from_orders(
         for event in events:
             if event.__class__.__name__ != "OrderFilled":
                 continue
-            order_side = str(getattr(event, "order_side", "")).upper()
+            order_side_value = getattr(event, "order_side", "")
+            order_side = str(
+                getattr(order_side_value, "name", order_side_value)
+            ).upper()
             quantity = float(getattr(event, "last_qty"))
             signed_delta = quantity if "BUY" in order_side else -quantity
             fills.append((int(getattr(event, "ts_event")), sequence, signed_delta))
@@ -593,7 +597,7 @@ def _position_intervals_from_orders(
     opened_ts_ns: int | None = None
     intervals: list[FundingPositionInterval] = []
     for ts_event, _, signed_delta in sorted(fills):
-        if opened_ts_ns is not None and position != 0.0:
+        if opened_ts_ns is not None and abs(position) > zero_tolerance:
             intervals.append(
                 FundingPositionInterval(
                     symbol=symbol,
@@ -604,9 +608,11 @@ def _position_intervals_from_orders(
                 )
             )
         position += signed_delta
+        if abs(position) <= zero_tolerance:
+            position = 0.0
         opened_ts_ns = ts_event if position != 0.0 else None
 
-    if opened_ts_ns is not None and position != 0.0:
+    if opened_ts_ns is not None and abs(position) > zero_tolerance:
         intervals.append(
             FundingPositionInterval(
                 symbol=symbol,
