@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date
+from datetime import UTC, date, datetime
 from pathlib import Path
 from typing import Literal
 
@@ -10,6 +10,10 @@ from pydantic import BaseModel, ConfigDict, Field
 import zstandard
 
 from statestrike.exports import ExportValidationReport, validate_export_bundle
+from statestrike.funding import (
+    funding_history_manifest_path,
+    funding_history_sidecar_path,
+)
 from statestrike.paths import build_export_path, build_normalized_path
 from statestrike.quality import QualityAuditReport, run_quality_audit
 from statestrike.storage import _parquet_source
@@ -22,6 +26,7 @@ ReadinessProfileName = Literal[
     "substrate_ready",
     "nautilus_baseline_ready",
     "nautilus_baseline_candidate",
+    "nautilus_funding_candidate",
     "funding_aware_ready",
 ]
 
@@ -34,6 +39,7 @@ class ReadinessProfile(BaseModel):
     required_truth_exports: tuple[str, ...] = ()
     required_corrected_exports: tuple[str, ...] = ()
     funding_required: bool = True
+    historical_funding_required: bool = False
     allowed_warning_reasons: tuple[str, ...] = ()
     baseline_input_manifest_required: bool = False
 
@@ -99,6 +105,22 @@ class ReadinessProfile(BaseModel):
             funding_required=True,
         )
 
+    @classmethod
+    def nautilus_funding_candidate(cls) -> "ReadinessProfile":
+        return cls(
+            name="nautilus_funding_candidate",
+            required_normalized_tables=(
+                "trades",
+                "book_events",
+                "book_levels",
+                "asset_ctx",
+            ),
+            required_truth_exports=("nautilus",),
+            funding_required=False,
+            historical_funding_required=True,
+            baseline_input_manifest_required=True,
+        )
+
 
 class BacktestReadinessThresholds(BaseModel):
     model_config = ConfigDict(frozen=True)
@@ -129,11 +151,33 @@ class BacktestReadinessReport(BaseModel):
     missing_recv_timestamp_count: int = Field(ge=0)
     recv_seq_non_monotonic_count: int = Field(ge=0)
     funding_enrichment_missing_count: int = Field(ge=0)
+    funding_history_manifest_path: str | None = None
+    funding_history_source_type: str | None = None
+    funding_history_endpoint_type: str | None = None
+    funding_history_row_count: int = Field(default=0, ge=0)
+    funding_history_missing_symbols: tuple[str, ...] = ()
+    funding_history_unsupported_symbols: tuple[str, ...] = ()
+    funding_history_interval_mismatch_symbols: tuple[str, ...] = ()
+    funding_history_coverage_incomplete_symbols: tuple[str, ...] = ()
     max_quarantine_rate: float = Field(ge=0.0)
     truth_corrected_mixed: bool = False
     export_contract_invalid_symbols: tuple[str, ...] = ()
     normalized_table_invalid_symbols: tuple[str, ...] = ()
     export_artifact_invalid_symbols: tuple[str, ...] = ()
+
+
+class _FundingHistoryValidation(BaseModel):
+    model_config = ConfigDict(frozen=True)
+
+    blocking_reasons: tuple[str, ...] = ()
+    manifest_path: str | None = None
+    source_type: str | None = None
+    endpoint_type: str | None = None
+    row_count: int = Field(default=0, ge=0)
+    missing_symbols: tuple[str, ...] = ()
+    unsupported_symbols: tuple[str, ...] = ()
+    interval_mismatch_symbols: tuple[str, ...] = ()
+    coverage_incomplete_symbols: tuple[str, ...] = ()
 
 
 def run_backtest_readiness(
@@ -187,6 +231,12 @@ def run_backtest_readiness(
         root=root,
         trading_date=trading_date,
         symbols=requested_symbols,
+    )
+    funding_history_validation = _validate_funding_history_sidecar(
+        root=root,
+        trading_date=trading_date,
+        symbols=requested_symbols,
+        enabled=readiness_profile.historical_funding_required,
     )
     max_quarantine_rate = max(quality_report.quarantine_rates.values(), default=0.0)
     truth_corrected_mixed = _truth_corrected_mixed(root=root)
@@ -246,10 +296,15 @@ def run_backtest_readiness(
         blocking_reasons.append("non_recoverable_book_gap_count_over_threshold")
     if funding_enrichment_missing_count > 0 and readiness_profile.funding_required:
         blocking_reasons.append("funding_enrichment_incomplete")
-    elif funding_enrichment_missing_count > 0:
+    elif (
+        funding_enrichment_missing_count > 0
+        and not readiness_profile.historical_funding_required
+    ):
         warning_reasons.append("funding_enrichment_incomplete")
     if funding_source_unsupported:
         blocking_reasons.append("funding_source_unsupported_for_dex")
+    if readiness_profile.historical_funding_required:
+        blocking_reasons.extend(funding_history_validation.blocking_reasons)
     if truth_corrected_mixed:
         blocking_reasons.append("truth_corrected_mixed")
     if export_contract_invalid_symbols:
@@ -297,6 +352,18 @@ def run_backtest_readiness(
         missing_recv_timestamp_count=missing_recv_timestamp_count,
         recv_seq_non_monotonic_count=recv_seq_non_monotonic_count,
         funding_enrichment_missing_count=funding_enrichment_missing_count,
+        funding_history_manifest_path=funding_history_validation.manifest_path,
+        funding_history_source_type=funding_history_validation.source_type,
+        funding_history_endpoint_type=funding_history_validation.endpoint_type,
+        funding_history_row_count=funding_history_validation.row_count,
+        funding_history_missing_symbols=funding_history_validation.missing_symbols,
+        funding_history_unsupported_symbols=funding_history_validation.unsupported_symbols,
+        funding_history_interval_mismatch_symbols=(
+            funding_history_validation.interval_mismatch_symbols
+        ),
+        funding_history_coverage_incomplete_symbols=(
+            funding_history_validation.coverage_incomplete_symbols
+        ),
         max_quarantine_rate=max_quarantine_rate,
         truth_corrected_mixed=truth_corrected_mixed,
         export_contract_invalid_symbols=export_contract_invalid_symbols,
@@ -317,9 +384,165 @@ def _resolve_profile(
         return ReadinessProfile.nautilus_baseline_ready()
     if profile_name == "nautilus_baseline_candidate":
         return ReadinessProfile.nautilus_baseline_candidate()
+    if profile_name == "nautilus_funding_candidate":
+        return ReadinessProfile.nautilus_funding_candidate()
     if profile_name == "funding_aware_ready":
         return ReadinessProfile.funding_aware_ready()
     raise ValueError(f"unknown readiness profile: {profile_name}")
+
+
+def _validate_funding_history_sidecar(
+    *,
+    root: Path,
+    trading_date: date,
+    symbols: tuple[str, ...],
+    enabled: bool,
+) -> _FundingHistoryValidation:
+    if not enabled:
+        return _FundingHistoryValidation()
+
+    manifest_path = funding_history_manifest_path(root=root, trading_date=trading_date)
+    history_path = funding_history_sidecar_path(root=root, trading_date=trading_date)
+    predicted_path = _funding_sidecar_path(root=root, trading_date=trading_date)
+    if not manifest_path.exists() or not history_path.exists():
+        reason = (
+            "predicted_funding_used_for_historical_baseline"
+            if predicted_path.exists()
+            else "funding_sidecar_missing"
+        )
+        return _FundingHistoryValidation(blocking_reasons=(reason,))
+
+    try:
+        payload = json.loads(manifest_path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError:
+        return _FundingHistoryValidation(
+            blocking_reasons=("funding_source_not_official",),
+            manifest_path=manifest_path.as_posix(),
+        )
+
+    source_type = payload.get("source_type")
+    endpoint_type = payload.get("endpoint_type")
+    blocking_reasons: list[str] = []
+    if source_type != "fundingHistory" or endpoint_type != "official_info":
+        blocking_reasons.append("funding_source_not_official")
+
+    start_time_ms = int(payload.get("start_time_ms", _trading_date_start_ms(trading_date)))
+    end_time_ms = int(payload.get("end_time_ms", _trading_date_start_ms(trading_date) + 86_400_000))
+    manifest_interval_hours = int(payload.get("funding_interval_hours", 0) or 0)
+    row_count = int(payload.get("row_count", 0) or 0)
+    unsupported_symbol_count = int(payload.get("unsupported_symbol_count", 0) or 0)
+    unsupported_symbols = tuple(symbols) if unsupported_symbol_count > 0 else ()
+
+    rows = _funding_history_rows_by_symbol(path=history_path, symbols=symbols)
+    expected_bucket_count = _expected_funding_bucket_count(
+        start_time_ms=start_time_ms,
+        end_time_ms=end_time_ms,
+    )
+    start_bucket = start_time_ms // 3_600_000
+    end_bucket = (end_time_ms - 1) // 3_600_000
+    missing_symbols: list[str] = []
+    interval_mismatch_symbols: list[str] = []
+    coverage_incomplete_symbols: list[str] = []
+    for symbol in symbols:
+        row = rows.get(symbol)
+        if row is None or row["row_count"] == 0:
+            missing_symbols.append(symbol)
+            continue
+        if manifest_interval_hours != 1 or row["interval_mismatch_count"] > 0:
+            interval_mismatch_symbols.append(symbol)
+        if (
+            row["hour_bucket_count"] < expected_bucket_count
+            or row["min_hour_bucket"] > start_bucket
+            or row["max_hour_bucket"] < end_bucket
+        ):
+            coverage_incomplete_symbols.append(symbol)
+
+    if missing_symbols or unsupported_symbols:
+        blocking_reasons.append("funding_symbol_coverage_incomplete")
+    if coverage_incomplete_symbols:
+        blocking_reasons.append("funding_history_incomplete")
+    if interval_mismatch_symbols:
+        blocking_reasons.append("funding_interval_mismatch")
+
+    return _FundingHistoryValidation(
+        blocking_reasons=tuple(dict.fromkeys(blocking_reasons)),
+        manifest_path=manifest_path.as_posix(),
+        source_type=str(source_type) if source_type is not None else None,
+        endpoint_type=str(endpoint_type) if endpoint_type is not None else None,
+        row_count=row_count,
+        missing_symbols=tuple(missing_symbols),
+        unsupported_symbols=unsupported_symbols,
+        interval_mismatch_symbols=tuple(interval_mismatch_symbols),
+        coverage_incomplete_symbols=tuple(coverage_incomplete_symbols),
+    )
+
+
+def _funding_history_rows_by_symbol(
+    *,
+    path: Path,
+    symbols: tuple[str, ...],
+) -> dict[str, dict[str, int]]:
+    if not symbols:
+        return {}
+    connection = duckdb.connect()
+    try:
+        source = _parquet_source([path])
+        rows = connection.execute(
+            f"""
+            SELECT
+                symbol,
+                COUNT(*) AS row_count,
+                COUNT(DISTINCT floor(funding_time_ms / 3600000)) AS hour_bucket_count,
+                MIN(funding_time_ms) AS min_timestamp_ms,
+                MAX(funding_time_ms) AS max_timestamp_ms,
+                MIN(floor(funding_time_ms / 3600000)) AS min_hour_bucket,
+                MAX(floor(funding_time_ms / 3600000)) AS max_hour_bucket,
+                SUM(CASE WHEN funding_interval_hours != 1 THEN 1 ELSE 0 END)
+                    AS interval_mismatch_count
+            FROM {source}
+            WHERE symbol IN ({", ".join("?" for _ in symbols)})
+            GROUP BY symbol
+            """,
+            list(symbols),
+        ).fetchall()
+    finally:
+        connection.close()
+    return {
+        str(symbol).upper(): {
+            "row_count": int(row_count),
+            "hour_bucket_count": int(hour_bucket_count),
+            "min_timestamp_ms": int(min_timestamp_ms),
+            "max_timestamp_ms": int(max_timestamp_ms),
+            "min_hour_bucket": int(min_hour_bucket),
+            "max_hour_bucket": int(max_hour_bucket),
+            "interval_mismatch_count": int(interval_mismatch_count or 0),
+        }
+        for (
+            symbol,
+            row_count,
+            hour_bucket_count,
+            min_timestamp_ms,
+            max_timestamp_ms,
+            min_hour_bucket,
+            max_hour_bucket,
+            interval_mismatch_count,
+        ) in rows
+    }
+
+
+def _expected_funding_bucket_count(*, start_time_ms: int, end_time_ms: int) -> int:
+    return max(1, int((end_time_ms - start_time_ms) // 3_600_000))
+
+
+def _trading_date_start_ms(trading_date: date) -> int:
+    return int(
+        datetime.combine(
+            trading_date,
+            datetime.min.time(),
+            tzinfo=UTC,
+        ).timestamp()
+        * 1000
+    )
 
 
 def _inspect_capture_logs(

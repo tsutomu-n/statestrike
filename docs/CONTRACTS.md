@@ -51,6 +51,9 @@ Readiness is profile-aware:
   strict `ready` semantics intact while allowing only explicitly approved
   warnings. Session-boundary replay duplicates require
   `baseline_input_manifest.session_replay_dedup_applied = true`.
+- `nautilus_funding_candidate`: derived Nautilus-only baseline input plus
+  official historical `fundingHistory` sidecar coverage. It is for historical
+  funding-aware gating only; `predictedFundings` must not satisfy this profile.
 - `funding_aware_ready`: full funding-aware readiness; missing funding enrichment
   is blocking.
 
@@ -77,6 +80,19 @@ at which the enrichment was produced. `enrichment_kind` distinguishes
 Hyperliquid `predictedFundings` is first-perp-dex only. Unsupported dex requests
 must be recorded as unsupported provenance and surfaced by readiness as
 `funding_source_unsupported_for_dex`; they must not silently fall back.
+
+Historical baseline and backtest funding coverage uses official Hyperliquid
+`fundingHistory`, stored under `enriched/funding_history`. Historical readiness
+requires:
+
+- `source_type = fundingHistory`
+- `endpoint_type = official_info`
+- `funding_interval_hours = 1`
+- full requested symbol coverage
+
+Using `predictedFundings` as the source for historical baseline funding is
+blocking and must surface as
+`predicted_funding_used_for_historical_baseline`.
 
 ## Storage And Query Roles
 

@@ -2,11 +2,12 @@ from __future__ import annotations
 
 import copy
 import json
-from datetime import date
+from datetime import UTC, date, datetime, timedelta
 from pathlib import Path
 
 from statestrike.collector import CollectorConfig
 from statestrike.enrichment import enrich_funding_schedule_from_predicted_fundings
+from statestrike.funding import build_funding_history_sidecar
 from statestrike.readiness import (
     BacktestReadinessThresholds,
     ReadinessProfile,
@@ -36,6 +37,34 @@ PREDICTED_FUNDINGS = [
 ]
 
 
+def with_symbol(message: dict, symbol: str) -> dict:
+    message = copy.deepcopy(message)
+    data = message.get("data")
+    if isinstance(data, dict):
+        if "coin" in data:
+            data["coin"] = symbol
+        if "s" in data:
+            data["s"] = symbol
+    elif isinstance(data, list):
+        for row in data:
+            if "coin" in row:
+                row["coin"] = symbol
+    return message
+
+
+def funding_history_payload(symbol: str, trading_date: date) -> list[dict[str, str | int]]:
+    start = datetime.combine(trading_date, datetime.min.time(), tzinfo=UTC)
+    return [
+        {
+            "coin": symbol,
+            "fundingRate": "0.0000125",
+            "premium": "0.0000010",
+            "time": int((start + timedelta(hours=hour)).timestamp() * 1000),
+        }
+        for hour in range(24)
+    ]
+
+
 def load_fixture(name: str) -> dict:
     return json.loads((FIXTURES / name).read_text(encoding="utf-8"))
 
@@ -52,6 +81,10 @@ def readiness_config() -> CollectorConfig:
     )
 
 
+def readiness_config_multi() -> CollectorConfig:
+    return readiness_config().model_copy(update={"allowed_symbols": ("BTC", "ETH")})
+
+
 def enrich_funding_sidecar(root: Path, *, trading_date: date) -> None:
     enrich_funding_schedule_from_predicted_fundings(
         root=root,
@@ -59,6 +92,49 @@ def enrich_funding_sidecar(root: Path, *, trading_date: date) -> None:
         symbols=("BTC",),
         predicted_fundings=PREDICTED_FUNDINGS,
         enrichment_asof_ts=1713819000000,
+    )
+
+
+def enrich_funding_history_sidecar(
+    root: Path,
+    *,
+    trading_date: date,
+    symbols: tuple[str, ...] = ("BTC",),
+    funding_interval_hours: int = 1,
+) -> None:
+    build_funding_history_sidecar(
+        root=root,
+        trading_date=trading_date,
+        symbols=symbols,
+        funding_history_payloads={
+            symbol: funding_history_payload(symbol, trading_date)
+            for symbol in symbols
+        },
+        funding_interval_hours=funding_interval_hours,
+        source_root=root / "source-truth",
+        copied_into_baseline_root=True,
+    )
+
+
+def run_clean_btc_eth_smoke(root: Path, *, trading_date: date) -> None:
+    eth_trades = with_symbol(load_fixture("trades.json"), "ETH")
+    eth_trades["data"][0]["tid"] = 101
+    eth_trades["data"][1]["tid"] = 102
+    run_smoke_batch(
+        root=root,
+        trading_date=trading_date,
+        messages=[
+            load_fixture("l2_book.json"),
+            load_fixture("trades.json"),
+            load_fixture("active_asset_ctx.json"),
+            with_symbol(load_fixture("l2_book.json"), "ETH"),
+            eth_trades,
+            with_symbol(load_fixture("active_asset_ctx.json"), "ETH"),
+        ],
+        config=readiness_config_multi(),
+        capture_session_id="session-ready-btc-eth",
+        batch_id="0001",
+        recv_ts_start=1713818880100,
     )
 
 
@@ -383,6 +459,115 @@ def test_backtest_readiness_blocks_when_funding_source_dex_is_unsupported(tmp_pa
 
     assert report.status == "blocked"
     assert "funding_source_unsupported_for_dex" in report.blocking_reasons
+
+
+def test_funding_candidate_blocks_when_one_symbol_missing(tmp_path) -> None:
+    trading_date = date(2026, 4, 23)
+    run_clean_btc_eth_smoke(tmp_path, trading_date=trading_date)
+    enrich_funding_history_sidecar(
+        tmp_path,
+        trading_date=trading_date,
+        symbols=("BTC",),
+    )
+
+    report = run_backtest_readiness(
+        root=tmp_path,
+        trading_date=trading_date,
+        symbols=("BTC", "ETH"),
+        profile="nautilus_funding_candidate",
+    )
+
+    assert report.status == "blocked"
+    assert report.funding_history_missing_symbols == ("ETH",)
+    assert "funding_symbol_coverage_incomplete" in report.blocking_reasons
+
+
+def test_funding_candidate_blocks_when_interval_mismatch(tmp_path) -> None:
+    trading_date = date(2026, 4, 23)
+    run_smoke_batch(
+        root=tmp_path,
+        trading_date=trading_date,
+        messages=[
+            load_fixture("l2_book.json"),
+            load_fixture("trades.json"),
+            load_fixture("active_asset_ctx.json"),
+        ],
+        config=readiness_config(),
+        capture_session_id="session-funding-interval-mismatch",
+        batch_id="0001",
+        recv_ts_start=1713818880100,
+    )
+    enrich_funding_history_sidecar(
+        tmp_path,
+        trading_date=trading_date,
+        funding_interval_hours=8,
+    )
+
+    report = run_backtest_readiness(
+        root=tmp_path,
+        trading_date=trading_date,
+        symbols=("BTC",),
+        profile="nautilus_funding_candidate",
+    )
+
+    assert report.status == "blocked"
+    assert report.funding_history_interval_mismatch_symbols == ("BTC",)
+    assert "funding_interval_mismatch" in report.blocking_reasons
+
+
+def test_funding_candidate_blocks_when_predicted_funding_used_for_historical_data(
+    tmp_path,
+) -> None:
+    trading_date = date(2026, 4, 23)
+    run_smoke_batch(
+        root=tmp_path,
+        trading_date=trading_date,
+        messages=[
+            load_fixture("l2_book.json"),
+            load_fixture("trades.json"),
+            load_fixture("active_asset_ctx.json"),
+        ],
+        config=readiness_config(),
+        capture_session_id="session-funding-predicted-for-history",
+        batch_id="0001",
+        recv_ts_start=1713818880100,
+    )
+    enrich_funding_sidecar(tmp_path, trading_date=trading_date)
+
+    report = run_backtest_readiness(
+        root=tmp_path,
+        trading_date=trading_date,
+        symbols=("BTC",),
+        profile="nautilus_funding_candidate",
+    )
+
+    assert report.status == "blocked"
+    assert report.funding_history_manifest_path is None
+    assert "predicted_funding_used_for_historical_baseline" in report.blocking_reasons
+
+
+def test_funding_candidate_ready_for_btc_eth_with_complete_history(tmp_path) -> None:
+    trading_date = date(2026, 4, 23)
+    run_clean_btc_eth_smoke(tmp_path, trading_date=trading_date)
+    enrich_funding_history_sidecar(
+        tmp_path,
+        trading_date=trading_date,
+        symbols=("BTC", "ETH"),
+    )
+
+    report = run_backtest_readiness(
+        root=tmp_path,
+        trading_date=trading_date,
+        symbols=("BTC", "ETH"),
+        profile="nautilus_funding_candidate",
+    )
+
+    assert report.status == "ready"
+    assert report.profile == ReadinessProfile.nautilus_funding_candidate()
+    assert report.blocking_reasons == ()
+    assert report.warning_reasons == ()
+    assert report.funding_history_row_count == 48
+    assert report.funding_history_missing_symbols == ()
 
 
 def test_backtest_readiness_warns_but_does_not_block_exchange_sorted_recv_inversion(
